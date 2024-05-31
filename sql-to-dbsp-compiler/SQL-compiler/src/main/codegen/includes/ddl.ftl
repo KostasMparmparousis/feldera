@@ -223,7 +223,7 @@ SqlCreateFunctionDeclaration SqlCreateFunction(Span s, boolean replace) :
     <RETURNS>
     type = DataType()
     nullable = NullableOptDefaultTrue()
-    [ <AS> body = OrderedQueryOrExpr(ExprContext.ACCEPT_NON_QUERY) ]
+    [ <AS> body = OrderedQueryOrExpr(ExprContext.ACCEPT_SUB_QUERY) ]
     {
         return new SqlCreateFunctionDeclaration(s.end(this), replace, ifNotExists,
             id, parameters, type.withNullable(nullable), body);
