@@ -85,7 +85,7 @@ public class CompilerMain {
             System.exit(1);
         }
 
-        for (Map.Entry<String, String> entry: options.ioOptions.loggingLevel.entrySet()) {
+        for (Map.Entry<String, String> entry : options.ioOptions.loggingLevel.entrySet()) {
             try {
                 int level = Integer.parseInt(entry.getValue());
                 Logger.INSTANCE.setLoggingLevel(entry.getKey(), level);
@@ -98,7 +98,8 @@ public class CompilerMain {
 
     PrintStream getOutputStream() throws IOException {
         PrintStream outputStream;
-        @Nullable String outputFile = this.options.ioOptions.outputFile;
+        @Nullable
+        String outputFile = this.options.ioOptions.outputFile;
         if (outputFile.isEmpty()) {
             outputStream = System.out;
         } else {
@@ -165,8 +166,8 @@ public class CompilerMain {
         compiler.optimize();
         DBSPCircuit dbsp = compiler.getFinalCircuit(this.options.ioOptions.functionName);
         String dotFormat = (this.options.ioOptions.emitJpeg ? "jpg"
-                            : this.options.ioOptions.emitPng ? "png"
-                            : null);
+                : this.options.ioOptions.emitPng ? "png"
+                        : null);
         if (dotFormat != null) {
             if (this.options.ioOptions.outputFile.isEmpty()) {
                 compiler.reportError(SourcePositionRange.INVALID, "Invalid output",

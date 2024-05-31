@@ -72,17 +72,19 @@ import java.util.List;
  * The protocol is:
  * - create compiler
  * - repeat as much as necessary:
- *   - compile a sequence of SQL statements
- *     (CREATE TABLE, CREATE VIEW)
- *   - get the resulting circuit, starting a new one
+ * - compile a sequence of SQL statements
+ * (CREATE TABLE, CREATE VIEW)
+ * - get the resulting circuit, starting a new one
  * This protocol allows one compiler to generate multiple independent circuits.
  * The compiler can also compile INSERT statements by simulating their
  * execution and keeping track of the contents of each table.
  * The contents after insertions can be obtained using getTableContents().
  */
 public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorReporter {
-    /** Name of the Rust file that will contain the user-defined functions.
-     * The definitions supplied by the user will be copied here. */
+    /**
+     * Name of the Rust file that will contain the user-defined functions.
+     * The definitions supplied by the user will be copied here.
+     */
     public static final String UDF_FILE_NAME = "udf.rs";
 
     final GlobalTypes globalTypes = new GlobalTypes();
@@ -93,7 +95,9 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         None,
         /** Data received from stdin. */
         Stdin,
-        /** Data read from a file.  We read the entire file upfront, and then we compile. */
+        /**
+         * Data read from a file. We read the entire file upfront, and then we compile.
+         */
         File,
         /** Data received through API calls (compileStatement/s). */
         API,
@@ -167,13 +171,14 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
     /**
      * Report an error or warning during compilation.
-     * @param range      Position in source where error is located.
-     * @param warning    True if this is a warning.
-     * @param errorType  A short string that categorizes the error type.
-     * @param message    Error message.
+     *
+     * @param range     Position in source where error is located.
+     * @param warning   True if this is a warning.
+     * @param errorType A short string that categorizes the error type.
+     * @param message   Error message.
      */
     public void reportProblem(SourcePositionRange range, boolean warning,
-                              String errorType, String message) {
+            String errorType, String message) {
         if (warning)
             this.hasWarnings = true;
         this.messages.reportProblem(range, warning, errorType, message);
@@ -185,15 +190,16 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
     /**
      * @param generate
-     * If 'false' the next "create view" statements will not generate
-     * an output for the circuit
+     *                 If 'false' the next "create view" statements will not
+     *                 generate
+     *                 an output for the circuit
      */
     public void generateOutputForNextView(boolean generate) {
         this.frontend.generateOutputForNextView(generate);
         this.midend.generateOutputForNextView(generate);
     }
 
-   void setSource(InputSource source) {
+    void setSource(InputSource source) {
         if (this.inputSources != InputSource.None &&
                 this.inputSources != source)
             throw new UnsupportedException("Input data already received from " + this.inputSources,
@@ -212,13 +218,13 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             // Otherwise, we append the statements to the sources.
             this.sources.append(statements);
         }
-
         try {
             // Parse using Calcite
             SqlNodeList parsed;
             if (many) {
                 if (statements.isEmpty())
                     return;
+                System.out.println("Parsing statements: " + statements);
                 parsed = this.frontend.parseStatements(statements);
             } else {
                 SqlNode node = this.frontend.parse(statements);
@@ -231,7 +237,9 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
             // Compile first the statements that define functions and types
             List<SqlFunction> functions = new ArrayList<>();
-            for (SqlNode node: parsed) {
+            List<SqlFunction> tableFunctions = new ArrayList<>();
+            List<SqlNode> tableFunctionsNodes = new ArrayList<>();
+            for (SqlNode node : parsed) {
                 Logger.INSTANCE.belowLevel(this, 2)
                         .append("Parsing result: ")
                         .append(node.toString())
@@ -246,11 +254,15 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                     continue;
                 }
                 if (kind == SqlKind.CREATE_FUNCTION) {
-                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
-                    if (fe == null)
-                        continue;
-                    functions.add(fe.to(CreateFunctionStatement.class).function);
-                    this.midend.compile(fe);
+                    if (node.toString().contains("SELECT"))
+                        tableFunctionsNodes.add(node);
+                    else {
+                        FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                        if (fe == null)
+                            continue;
+                        functions.add(fe.to(CreateFunctionStatement.class).function);
+                        this.midend.compile(fe);
+                    }
                 }
             }
 
@@ -277,6 +289,29 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                     // error during compilation
                     continue;
                 this.midend.compile(fe);
+            }
+
+            // Compile all statements which do not define functions or types
+            for (SqlNode node : tableFunctionsNodes) {
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                if (fe == null)
+                    // error during compilation
+                    continue;
+                tableFunctions.add(fe.to(CreateFunctionStatement.class).function);
+                this.midend.compile(fe);
+            }
+
+            if (!tableFunctions.isEmpty()) {
+                // Reload the operator table to include all the newly defined functions
+                SqlOperatorTable newTable = SqlOperatorTables.of(tableFunctions);
+                this.frontend.addOperatorTable(newTable);
+                if (this.options.ioOptions.udfs.isEmpty()) {
+                    this.getCompiler().reportWarning(
+                            SourcePositionRange.INVALID,
+                            "No UDFs",
+                            "Program contains `CREATE FUNCTION` statements but the compiler" +
+                                    " was invoked without the `-udf` flag");
+                }
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
@@ -315,10 +350,10 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
     public ObjectNode getIOMetadataAsJson() {
         ObjectMapper mapper = new ObjectMapper();
         ArrayNode inputs = mapper.createArrayNode();
-        for (IHasSchema input: this.metadata.inputTables.values())
+        for (IHasSchema input : this.metadata.inputTables.values())
             inputs.add(input.asJson());
         ArrayNode outputs = mapper.createArrayNode();
-        for (IHasSchema output: this.metadata.outputViews.values())
+        for (IHasSchema output : this.metadata.outputViews.values())
             outputs.add(output.asJson());
         ObjectNode ios = mapper.createObjectNode();
         ios.set("inputs", inputs);
@@ -373,7 +408,8 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
     /**
      * Get the circuit generated by compiling the statements to far.
      * Start a new circuit.
-     * @param name  Name to use for the produced circuit.
+     *
+     * @param name Name to use for the produced circuit.
      */
     public DBSPCircuit getFinalCircuit(String name) {
         if (this.circuit == null) {
@@ -385,12 +421,18 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         return result;
     }
 
-    /** Get the contents of the tables as a result of all the INSERT statements compiled. */
+    /**
+     * Get the contents of the tables as a result of all the INSERT statements
+     * compiled.
+     */
     public TableContents getTableContents() {
         return this.midend.getTableContents();
     }
 
-    /** Empty the contents of all tables that were populated by INSERT or DELETE statements */
+    /**
+     * Empty the contents of all tables that were populated by INSERT or DELETE
+     * statements
+     */
     public void clearTables() {
         this.midend.clearTables();
     }

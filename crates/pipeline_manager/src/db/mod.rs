@@ -919,7 +919,7 @@ impl ProjectDB {
             let database_dir = api_config
                 .expect("ApiServerConfig needs to be provided when using pg-embed")
                 .postgres_embed_data_dir();
-            let pg_inst = pg_setup::install(database_dir, true, Some(8082)).await?;
+            let pg_inst = pg_setup::install(database_dir, true, Some(5432)).await?;
             let connection_string = pg_inst.db_uri.to_string();
             return Self::connect_inner(connection_string.as_str(), Some(pg_inst)).await;
         };
