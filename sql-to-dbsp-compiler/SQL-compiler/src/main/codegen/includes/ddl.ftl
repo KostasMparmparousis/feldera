@@ -230,6 +230,36 @@ SqlCreateFunctionDeclaration SqlCreateFunction(Span s, boolean replace) :
     }
 }
 
+SqlCreateUdfDeclaration SqlCreateFunctionUdf(Span s, boolean replace) :
+{
+    final boolean ifNotExists;
+    final SqlIdentifier id;
+    final SqlNodeList parameters;
+    final SqlDataTypeSpec type;
+    final SqlIdentifier res;
+    final SqlIdentifier source;
+    final boolean nullable;
+    SqlNode expression = null;
+}
+{
+    <FUNCTION> ifNotExists = IfNotExistsOpt()
+    id = SimpleIdentifier()
+    parameters = AttributeDefList()
+    <RETURNS>
+    type = DataType()
+    <AS>
+    (
+    <SELECT> res= CompoundIdentifier()
+    <FROM> source = CompoundTableIdentifier()
+    nullable = NullableOptDefaultTrue()
+    [ <WHERE> expression = OrderedQueryOrExpr(ExprContext.ACCEPT_NON_QUERY) ]
+    )
+    {
+        return new SqlCreateUdfDeclaration(s.end(this), replace, ifNotExists,
+            id, parameters, type.withNullable(nullable), res, source, expression);
+    }
+}
+
 SqlCreate SqlCreateType(Span s, boolean replace) :
 {
     final SqlIdentifier id;

@@ -39,6 +39,7 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.RelVisitor;
 import org.apache.calcite.rel.core.TableScan;
+import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.logical.LogicalValues;
@@ -720,6 +721,7 @@ public class CalciteCompiler implements IWritesLogs {
     static class ProjectExtractor extends RelVisitor {
         @Nullable
         RexNode body = null;
+        RexNode joinCondition = null;
 
         <T> boolean visitIfMatches(RelNode node, Class<T> clazz, Consumer<T> method) {
             T value = ICastable.as(node, clazz);
@@ -740,44 +742,140 @@ public class CalciteCompiler implements IWritesLogs {
             this.body = fields.get(0);
         }
 
+        void visitJoin(LogicalJoin join) {
+            this.joinCondition = join.getCondition();
+        }
+
         @Override
         public void visit(RelNode node, int ordinal, @Nullable RelNode parent) {
             // First process children
             super.visit(node, ordinal, parent);
             boolean success = this.visitIfMatches(node, LogicalTableScan.class, this::visitScan) ||
+                    this.visitIfMatches(node, LogicalJoin.class, this::visitJoin) ||
                     this.visitIfMatches(node, LogicalProject.class, this::visitProject);
             if (!success)
                 // Anything else is an exception
-                throw new UnimplementedException("Function too complex", CalciteObject.create(node));
+                throw new UnimplementedException("Function too complex!", CalciteObject.create(node));
         }
     };
+
+    @Nullable
+    RexNode createFunctionTable(SqlCreateUdfDeclaration decl) {
+        try {
+            System.out.println("I AM HEREEEEEEEE");
+            StringBuilder builder = new StringBuilder();
+            SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
+            System.out.println(decl.getRes());
+            builder.append("CREATE TABLE TMP(");
+            decl.getParameters().unparse(writer, 0, 0);
+            builder.append(");\n");
+            builder.append("CREATE VIEW TMP0 AS SELECT");
+            decl.getRes().unparse(writer, 0, 0);
+            builder.append("FROM");
+            decl.getSource().unparse(writer, 0, 0);
+            if (decl.getExpression() != null) {
+                builder.append("WHERE");
+                decl.getExpression().unparse(writer, 0, 0);
+            }
+
+            String sql = builder.toString();
+            // SqlNodeList parameters = decl.getParameters();
+            // for (SqlNode node : parameters) {
+            // String parameterName = node.toString().split("\\s+")[0].replace("`", "");
+            // int firstOccurrenceIndex = sql.indexOf(parameterName);
+            // // Split the original SQL into two parts: before and after the first
+            // occurrence
+            // String beforeFirstOccurrence = sql.substring(0, firstOccurrenceIndex +
+            // parameterName.length());
+            // String afterFirstOccurrence = sql.substring(firstOccurrenceIndex +
+            // parameterName.length());
+            // String replacement = "TMP\".\"" + parameterName;
+            // // Replace all occurrences in the part after the first occurrence
+            // String modifiedAfterFirstOccurrence =
+            // afterFirstOccurrence.replaceAll(parameterName, replacement);
+
+            // // Combine the parts
+            // sql = beforeFirstOccurrence + modifiedAfterFirstOccurrence;
+            // // sql = sql.replaceAll("\\b" + parameterName + "\\b", "TMP\".\"" +
+            // // parameterName);
+            // }
+            // sql = sql.replace("\nWHERE", ", \"TMP\"\nWHERE");
+            System.out.println("\n=====================\n" + sql);
+            System.out.println("===========================\n");
+            CalciteCompiler clone = new CalciteCompiler(this);
+            SqlNodeList list = clone.parseStatements(sql);
+
+            FrontEndStatement statement = null;
+            for (SqlNode node : list) {
+                statement = clone.compile(node.toString(), node, null);
+            }
+
+            CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
+            assert view != null;
+            RelNode node = view.getRelNode();
+            ProjectExtractor extractor = new ProjectExtractor();
+            System.out.println("\n||||||||||||||||||||||||||heyyyyy 4\n");
+            extractor.go(node);
+            System.out.println("\n||||||||||||||||||||||||||heyyyyy 4\n");
+            return Objects.requireNonNull(extractor.body);
+        } catch (SqlParseException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     @Nullable
     RexNode createFunctionTable(SqlCreateFunctionDeclaration decl) {
         SqlNode body = decl.getBody();
         if (body == null)
             return null;
-
         try {
             StringBuilder builder = new StringBuilder();
             SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-            builder.append("CREATE VIEW TMP0 AS ");
+            builder.append("CREATE TABLE TMP(");
+            decl.getParameters().unparse(writer, 0, 0);
+            builder.append(");\n");
+            builder.append("CREATE VIEW TMP0 AS SELECT ");
             body.unparse(writer, 0, 0);
+            builder.append(" FROM TMP;");
+
             String sql = builder.toString();
+
+            SqlNodeList parameters = decl.getParameters();
+            for (SqlNode node : parameters) {
+                String parameterName = node.toString().split("\\s+")[0].replace("`", "");
+                int firstOccurrenceIndex = sql.indexOf(parameterName);
+                // Split the original SQL into two parts: before and after the first occurrence
+                String beforeFirstOccurrence = sql.substring(0, firstOccurrenceIndex +
+                        parameterName.length());
+                String afterFirstOccurrence = sql.substring(firstOccurrenceIndex +
+                        parameterName.length());
+                String replacement = "TMP\".\"" + parameterName;
+                // Replace all occurrences in the part after the first occurrence
+                String modifiedAfterFirstOccurrence = afterFirstOccurrence.replaceAll(parameterName, replacement);
+
+                // Combine the parts
+                sql = beforeFirstOccurrence + modifiedAfterFirstOccurrence;
+                // sql = sql.replaceAll("\\b" + parameterName + "\\b", "TMP\".\"" +
+                // parameterName);
+            }
+            sql = sql.replace("\nWHERE", ", \"TMP\"\nWHERE");
+            System.out.println("\n=====================\n" + sql);
+            System.out.println("===========================\n");
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
 
             FrontEndStatement statement = null;
             for (SqlNode node : list) {
-                System.out.println("\n||||||||||||||||||||||||||\n" + node.toString());
-                System.out.println("||||||||||||||||||||||||||\n");
                 statement = clone.compile(node.toString(), node, null);
             }
+
             CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
             assert view != null;
             RelNode node = view.getRelNode();
             ProjectExtractor extractor = new ProjectExtractor();
+            System.out.println("\n||||||||||||||||||||||||||heyyyyy 4\n");
             extractor.go(node);
+            System.out.println("\n||||||||||||||||||||||||||heyyyyy 4\n");
             return Objects.requireNonNull(extractor.body);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
@@ -841,8 +939,6 @@ public class CalciteCompiler implements IWritesLogs {
             SqlNode node,
             @Nullable String comment) {
         CalciteObject object = CalciteObject.create(node);
-        System.out.println("\n...........................\n" + sqlStatement);
-        System.out.println("...........................\n");
         Logger.INSTANCE.belowLevel(this, 3)
                 .append("Compiling ")
                 .append(sqlStatement)
@@ -887,6 +983,7 @@ public class CalciteCompiler implements IWritesLogs {
             }
             case CREATE_FUNCTION: {
                 SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) node;
+                // SqlCreateUdfDeclaration udfDecl = (SqlCreateUdfDeclaration) node;
                 List<Map.Entry<String, RelDataType>> parameters = Linq.map(
                         decl.getParameters(), param -> {
                             SqlAttributeDefinition attr = (SqlAttributeDefinition) param;
@@ -919,9 +1016,7 @@ public class CalciteCompiler implements IWritesLogs {
                 Logger.INSTANCE.belowLevel(this, 2)
                         .append(query.toString())
                         .newline();
-                System.out.println("\n//////////////////////////////////////\n" + query);
                 RelRoot relRoot = converter.convertQuery(query, true, true);
-                System.out.println("//////////////////////////////////////\n");
                 List<RelColumnMetadata> columns = this.createColumnsMetadata(CalciteObject.create(node),
                         cv.name, true, relRoot, cv.columnList);
                 RelNode optimized = this.optimize(relRoot.rel);

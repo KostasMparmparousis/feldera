@@ -33,6 +33,7 @@ import org.dbsp.sqlCompiler.compiler.IErrorReporter;
 import org.dbsp.sqlCompiler.compiler.StderrErrorReporter;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CalciteCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
+import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateUdfDeclaration;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlExtendedColumnDeclaration;
 import org.junit.Assert;
 import org.junit.Test;
@@ -241,11 +242,10 @@ public class ParserTests {
     @Test
     public void primaryKeyTest() throws SqlParseException {
         // MYSQL syntax for primary keys
-        String query =
-                """
-                        create table git_commit (
-                            git_commit_id bigint not null primary key
-                        )""";
+        String query = """
+                create table git_commit (
+                    git_commit_id bigint not null primary key
+                )""";
         CalciteCompiler calcite = this.getCompiler();
         SqlNode node = calcite.parseStatements(query);
         Assert.assertNotNull(node);
@@ -254,12 +254,11 @@ public class ParserTests {
     @Test
     public void primaryKeyTest0() throws SqlParseException {
         // standard syntax for primary keys
-        String query =
-                """
-                        create table git_commit (
-                            git_commit_id bigint not null,
-                            PRIMARY KEY (git_commit_id)
-                        )""";
+        String query = """
+                create table git_commit (
+                    git_commit_id bigint not null,
+                    PRIMARY KEY (git_commit_id)
+                )""";
         CalciteCompiler calcite = this.getCompiler();
         SqlNode node = calcite.parseStatements(query);
         Assert.assertNotNull(node);
@@ -268,26 +267,25 @@ public class ParserTests {
     @Test
     public void foreignKeyTest() throws SqlParseException {
         // MYSQL syntax for FOREIGN KEY
-        String query =
-                """
-                        create table git_commit (
-                            git_commit_id bigint not null,
-                            repository_id bigint not null,
-                            commit_id varchar not null,
-                            commit_date timestamp not null,
-                            commit_owner varchar not null
-                        );
-                        create table pipeline_sources (
-                            git_commit_id bigint not null foreign key references git_commit(git_commit_id),
-                            pipeline_id bigint not null
-                        )""";
+        String query = """
+                create table git_commit (
+                    git_commit_id bigint not null,
+                    repository_id bigint not null,
+                    commit_id varchar not null,
+                    commit_date timestamp not null,
+                    commit_owner varchar not null
+                );
+                create table pipeline_sources (
+                    git_commit_id bigint not null foreign key references git_commit(git_commit_id),
+                    pipeline_id bigint not null
+                )""";
         CalciteCompiler calcite = this.getCompiler();
         SqlNode node = calcite.parseStatements(query);
         Assert.assertNotNull(node);
     }
 
     @Test
-    public void  keyAndSeparateForeignKeyTest() throws SqlParseException {
+    public void keyAndSeparateForeignKeyTest() throws SqlParseException {
         String query = """
                 CREATE TABLE productvariant_t (
                     id BIGINT NOT NULL PRIMARY KEY,
@@ -310,7 +308,7 @@ public class ParserTests {
         Assert.assertNotNull(node);
     }
 
-   @Test
+    @Test
     public void keyAndForeignKeyTest() throws SqlParseException {
         String query = """
                 CREATE TABLE productvariant_t (
