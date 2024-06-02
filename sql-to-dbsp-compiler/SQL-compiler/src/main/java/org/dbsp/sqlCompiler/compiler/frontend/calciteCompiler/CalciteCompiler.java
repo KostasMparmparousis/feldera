@@ -38,7 +38,10 @@ import org.apache.calcite.prepare.Prepare;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.RelVisitor;
+import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.core.TableScan;
+import org.apache.calcite.rel.logical.LogicalAggregate;
+import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.logical.LogicalValues;
@@ -56,17 +59,22 @@ import org.apache.calcite.runtime.MapEntry;
 import org.apache.calcite.schema.Function;
 import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.SchemaPlus;
+import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlBasicTypeNameSpec;
+import org.apache.calcite.sql.SqlBinaryOperator;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlExplainFormat;
 import org.apache.calcite.sql.SqlExplainLevel;
+import org.apache.calcite.sql.SqlFunctionCategory;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlInsert;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
+import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlOperatorTable;
+import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlTypeNameSpec;
 import org.apache.calcite.sql.SqlUserDefinedTypeNameSpec;
 import org.apache.calcite.sql.SqlWriter;
@@ -79,9 +87,14 @@ import org.apache.calcite.sql.ddl.SqlDropTable;
 import org.apache.calcite.sql.ddl.SqlKeyConstraint;
 import org.apache.calcite.sql.fun.SqlLibrary;
 import org.apache.calcite.sql.fun.SqlLibraryOperatorTableFactory;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlParseException;
 import org.apache.calcite.sql.parser.SqlParser;
+import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.pretty.SqlPrettyWriter;
+import org.apache.calcite.sql.type.SqlOperandTypeChecker;
+import org.apache.calcite.sql.type.SqlOperandTypeInference;
+import org.apache.calcite.sql.type.SqlReturnTypeInference;
 import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.util.SqlOperatorTables;
@@ -129,6 +142,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.function.Consumer;
+import java.util.Iterator;
 
 /**
  * The calcite compiler compiles SQL into Calcite RelNode representations.
@@ -136,11 +150,11 @@ import java.util.function.Consumer;
  * The protocol is:
  * - compiler is initialized (startCompilation)
  * - a sequence of statements is supplied as SQL strings:
- *   - table definition statements
- *   - insert or delete statements
- *   - type creation statements
- *   - function creation statements
- *   - view definition statements
+ * - table definition statements
+ * - insert or delete statements
+ * - type creation statements
+ * - function creation statements
+ * - view definition statements
  * For each statement the compiler returns a representation suitable for passing
  * to the mid-end.
  * The front-end is itself composed of several stages:
@@ -164,15 +178,20 @@ public class CalciteCompiler implements IWritesLogs {
     private ValidateTypes validateTypes;
     private final CalciteConnectionConfig connectionConfig;
     private final IErrorReporter errorReporter;
-    /** If true the next view will be an output, otherwise it's just an intermediate result */
+    /**
+     * If true the next view will be an output, otherwise it's just an intermediate
+     * result
+     */
     boolean generateOutputForNextView = true;
     private final SchemaPlus rootSchema;
     private final CustomFunctions customFunctions;
     /** User-defined types */
     private final HashMap<String, RelStruct> udt;
 
-    /** Create a copy of the 'source' compiler which can be used to compile
-     * some generated SQL without affecting its data structures */
+    /**
+     * Create a copy of the 'source' compiler which can be used to compile
+     * some generated SQL without affecting its data structures
+     */
     public CalciteCompiler(CalciteCompiler source) {
         this.options = source.options;
         this.parserConfig = source.parserConfig;
@@ -192,14 +211,14 @@ public class CalciteCompiler implements IWritesLogs {
     }
 
     void copySchema(SchemaPlus source) {
-        for (String name: source.getTableNames())
+        for (String name : source.getTableNames())
             this.rootSchema.add(name, Objects.requireNonNull(source.getTable(name)));
-        for (String name: source.getTypeNames())
+        for (String name : source.getTypeNames())
             this.rootSchema.add(name, Objects.requireNonNull(source.getType(name)));
-        for (String name: source.getFunctionNames())
-            for (Function function: source.getFunctions(name))
+        for (String name : source.getFunctionNames())
+            for (Function function : source.getFunctions(name))
                 this.rootSchema.add(name, function);
-        for (String name: source.getSubSchemaNames())
+        for (String name : source.getSubSchemaNames())
             this.rootSchema.add(name, Objects.requireNonNull(source.getSubSchema(name)));
     }
 
@@ -216,23 +235,30 @@ public class CalciteCompiler implements IWritesLogs {
         public int getMaxNumericPrecision() {
             return DBSPTypeDecimal.MAX_PRECISION;
         }
+
         @Override
         public int getMaxNumericScale() {
             return DBSPTypeDecimal.MAX_SCALE;
         }
+
         @Override
         public int getMaxPrecision(SqlTypeName typeName) {
             if (typeName.equals(SqlTypeName.TIME))
                 return 9;
             return super.getMaxPrecision(typeName);
         }
+
         @Override
-        public boolean shouldConvertRaggedUnionTypesToVarying() { return true; }
+        public boolean shouldConvertRaggedUnionTypesToVarying() {
+            return true;
+        }
     };
 
-    /** Additional validation tests on top of Calcite.
+    /**
+     * Additional validation tests on top of Calcite.
      * We need to do these before conversion to Rel, because Rel
-     * does not have source position information anymore. */
+     * does not have source position information anymore.
+     */
     public class ValidateTypes extends SqlShuttle {
         final IErrorReporter reporter;
 
@@ -271,7 +297,7 @@ public class CalciteCompiler implements IWritesLogs {
         Casing unquotedCasing = Casing.TO_UPPER;
         switch (options.languageOptions.unquotedCasing) {
             case "upper":
-                //noinspection ReassignedVariable,DataFlowIssue
+                // noinspection ReassignedVariable,DataFlowIssue
                 unquotedCasing = Casing.TO_UPPER;
                 break;
             case "lower":
@@ -284,7 +310,7 @@ public class CalciteCompiler implements IWritesLogs {
                 errorReporter.reportError(SourcePositionRange.INVALID,
                         "Illegal option",
                         "Illegal value for option --unquotedCasing: " +
-                        Utilities.singleQuote(options.languageOptions.unquotedCasing));
+                                Utilities.singleQuote(options.languageOptions.unquotedCasing));
                 // Continue execution.
         }
 
@@ -348,15 +374,17 @@ public class CalciteCompiler implements IWritesLogs {
                                 SqlLibrary.BIG_QUERY,
                                 SqlLibrary.SPARK,
                                 SqlLibrary.SPATIAL)),
-                SqlOperatorTables.of(this.customFunctions.getInitialFunctions())
-        );
+                SqlOperatorTables.of(this.customFunctions.getInitialFunctions()));
     }
 
     public void addSchemaSource(String name, Schema schema) {
         this.rootSchema.add(name, schema);
     }
 
-    /** Add a new set of operators to the operator table.  Creates a new validator, converter */
+    /**
+     * Add a new set of operators to the operator table. Creates a new validator,
+     * converter
+     */
     public void addOperatorTable(SqlOperatorTable operatorTable) {
         SqlOperatorTable newOperatorTable;
         if (this.validator != null) {
@@ -375,8 +403,7 @@ public class CalciteCompiler implements IWritesLogs {
                 newOperatorTable,
                 catalogReader,
                 this.typeFactory,
-                validatorConfig
-        );
+                validatorConfig);
         this.validateTypes = new ValidateTypes(errorReporter);
         this.converter = new SqlToRelConverter(
                 (type, query, schema, path) -> null,
@@ -384,8 +411,7 @@ public class CalciteCompiler implements IWritesLogs {
                 catalogReader,
                 this.cluster,
                 StandardConvertletTable.INSTANCE,
-                this.converterConfig
-        );
+                this.converterConfig);
     }
 
     public static String getPlan(RelNode rel) {
@@ -398,9 +424,11 @@ public class CalciteCompiler implements IWritesLogs {
         return this.cluster.getRexBuilder();
     }
 
-    /** Keep here a number of empty lines.  This is done to fool the SqlParser
+    /**
+     * Keep here a number of empty lines. This is done to fool the SqlParser
      * below: for each invocation of parseStatements we create a new SqlParser.
-     * There is no way to reuse the previous parser one, unfortunately. */
+     * There is no way to reuse the previous parser one, unfortunately.
+     */
     final StringBuilder newlines = new StringBuilder();
 
     SqlParser createSqlParser(String sql) {
@@ -426,9 +454,12 @@ public class CalciteCompiler implements IWritesLogs {
         return Objects.requireNonNull(this.converter);
     }
 
-    /** Given a SQL statement returns a SqlNode - a calcite AST
+    /**
+     * Given a SQL statement returns a SqlNode - a calcite AST
      * representation of the query.
-     * @param sql  SQL query to compile */
+     *
+     * @param sql SQL query to compile
+     */
     public SqlNode parse(String sql) throws SqlParseException {
         SqlParser sqlParser = this.createSqlParser(sql);
         SqlNode result = sqlParser.parseStmt();
@@ -440,7 +471,7 @@ public class CalciteCompiler implements IWritesLogs {
     public SqlNodeList parseStatements(String statements) throws SqlParseException {
         SqlParser sqlParser = this.createSqlParser(statements);
         SqlNodeList sqlNodes = sqlParser.parseStmtList();
-        for (SqlNode node: sqlNodes) {
+        for (SqlNode node : sqlNodes) {
             node.accept(this.getTypeValidator());
         }
         return sqlNodes;
@@ -514,7 +545,7 @@ public class CalciteCompiler implements IWritesLogs {
         Map<String, SqlIdentifier> primaryKeys = new HashMap<>();
 
         // First scan for standard style PRIMARY KEY constraints.
-        for (SqlNode col: Objects.requireNonNull(list)) {
+        for (SqlNode col : Objects.requireNonNull(list)) {
             if (col instanceof SqlKeyConstraint) {
                 if (key != null) {
                     this.errorReporter.reportError(new SourcePositionRange(col.getParserPosition()),
@@ -528,7 +559,7 @@ public class CalciteCompiler implements IWritesLogs {
                     throw new InternalCompilerError("Expected 2 operands", CalciteObject.create(key));
                 }
                 SqlNode operand = key.operand(1);
-                if (! (operand instanceof SqlNodeList)) {
+                if (!(operand instanceof SqlNodeList)) {
                     throw new InternalCompilerError("Expected a list of columns", CalciteObject.create(operand));
                 }
                 for (SqlNode keyColumn : (SqlNodeList) operand) {
@@ -541,8 +572,9 @@ public class CalciteCompiler implements IWritesLogs {
                     if (primaryKeys.containsKey(name)) {
                         this.errorReporter.reportError(new SourcePositionRange(identifier.getParserPosition()),
                                 "Duplicate key column", "Column " + Utilities.singleQuote(name) +
-                                " already declared as key");
-                        this.errorReporter.reportError(new SourcePositionRange(primaryKeys.get(name).getParserPosition()),
+                                        " already declared as key");
+                        this.errorReporter.reportError(
+                                new SourcePositionRange(primaryKeys.get(name).getParserPosition()),
                                 "Duplicate key column", "Previous declaration");
                     }
                     primaryKeys.put(name, identifier);
@@ -551,7 +583,7 @@ public class CalciteCompiler implements IWritesLogs {
         }
 
         // Scan again the rest of the columns.
-        for (SqlNode col: Objects.requireNonNull(list)) {
+        for (SqlNode col : Objects.requireNonNull(list)) {
             SqlIdentifier name;
             SqlDataTypeSpec typeSpec;
             boolean isPrimaryKey = false;
@@ -623,7 +655,7 @@ public class CalciteCompiler implements IWritesLogs {
         }
 
         if (!primaryKeys.isEmpty()) {
-            for (SqlIdentifier s: primaryKeys.values()) {
+            for (SqlIdentifier s : primaryKeys.values()) {
                 this.errorReporter.reportError(new SourcePositionRange(s.getParserPosition()),
                         "No such column", "Key field " + Utilities.singleQuote(s.toString()) +
                                 " does not correspond to a column");
@@ -657,7 +689,7 @@ public class CalciteCompiler implements IWritesLogs {
             Objects.requireNonNull(field);
             boolean nameIsQuoted = false;
             if (columnNames != null) {
-                SqlIdentifier id = (SqlIdentifier)columnNames.get(index);
+                SqlIdentifier id = (SqlIdentifier) columnNames.get(index);
                 String columnName = id.getSimple();
                 nameIsQuoted = Utilities.identifierIsQuoted(id);
                 field = new RelDataTypeFieldImpl(columnName, field.getIndex(), field.getType());
@@ -670,14 +702,16 @@ public class CalciteCompiler implements IWritesLogs {
                                 new SourcePositionRange(objectName.getParserPosition()),
                                 "Duplicate column",
                                 (view ? "View " : "Table ") + objectName.getSimple() +
-                                        " contains two columns with the same name " + Utilities.singleQuote(specifiedName) + "\n" +
+                                        " contains two columns with the same name "
+                                        + Utilities.singleQuote(specifiedName) + "\n" +
                                         "You can allow this behavior using the --lenient compiler flag");
                     } else {
                         this.errorReporter.reportWarning(
                                 new SourcePositionRange(objectName.getParserPosition()),
                                 "Duplicate column",
                                 (view ? "View " : "Table ") + objectName.getSimple() +
-                                        " contains two columns with the same name " + Utilities.singleQuote(specifiedName) + "\n" +
+                                        " contains two columns with the same name "
+                                        + Utilities.singleQuote(specifiedName) + "\n" +
                                         "Some columns will be renamed in the produced output.");
                     }
                 }
@@ -691,12 +725,19 @@ public class CalciteCompiler implements IWritesLogs {
         return columns;
     }
 
-    /** Visitor which extracts a function from a plan of the form
+    /**
+     * Visitor which extracts a function from a plan of the form
      * PROJECT expression
-     *   SCAN table
-     * This is used by the code that generates SQL user-defined functions. */
+     * SCAN table
+     * This is used by the code that generates SQL user-defined functions.
+     */
     static class ProjectExtractor extends RelVisitor {
-        @Nullable RexNode body = null;
+        @Nullable
+        RexNode body = null;
+        @Nullable
+        RexNode condition = null;
+        @Nullable
+        String function = null;
 
         <T> boolean visitIfMatches(RelNode node, Class<T> clazz, Consumer<T> method) {
             T value = ICastable.as(node, clazz);
@@ -717,13 +758,27 @@ public class CalciteCompiler implements IWritesLogs {
             this.body = fields.get(0);
         }
 
+        void visitFilter(LogicalFilter filter) {
+            this.condition = filter.getCondition();
+        }
+
+        void visitAggregate(LogicalAggregate aggregate) {
+            for (AggregateCall call : aggregate.getAggCallList()) {
+                SqlOperator operator = call.getAggregation();
+                if (operator.getKind() == SqlKind.COUNT) {
+                    this.function = "COUNT(*)";
+                }
+            }
+        }
+
         @Override
         public void visit(RelNode node, int ordinal, @Nullable RelNode parent) {
             // First process children
             super.visit(node, ordinal, parent);
-            boolean success =
-                    this.visitIfMatches(node, LogicalTableScan.class, this::visitScan) ||
-                    this.visitIfMatches(node, LogicalProject.class, this::visitProject);
+            boolean success = this.visitIfMatches(node, LogicalTableScan.class, this::visitScan) ||
+                    this.visitIfMatches(node, LogicalProject.class, this::visitProject) ||
+                    this.visitIfMatches(node, LogicalFilter.class, this::visitFilter) ||
+                    this.visitIfMatches(node, LogicalAggregate.class, this::visitAggregate);
             if (!success)
                 // Anything else is an exception
                 throw new UnimplementedException("Function too complex", CalciteObject.create(node));
@@ -737,46 +792,110 @@ public class CalciteCompiler implements IWritesLogs {
             return null;
 
         try {
-            /* To compile a function like
-              CREATE FUNCTION fun(a type0, b type1) returning type2 as expression;
-              we generate the following SQL:
-              CREATE TABLE tmp(a type0, b type1);
-              SELECT expression FROM tmp;
-              The generated code for the query select expression
-              is used to obtain the body of the function.
-            */
+            /*
+             * To compile a function like
+             * CREATE FUNCTION fun(a type0, b type1) returning type2 as expression;
+             * we generate the following SQL:
+             * CREATE TABLE tmp(a type0, b type1);
+             * SELECT expression FROM tmp;
+             * The generated code for the query select expression
+             * is used to obtain the body of the function.
+             */
             StringBuilder builder = new StringBuilder();
             SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-            builder.append("CREATE TABLE TMP(");
-            decl.getParameters().unparse(writer, 0, 0);
-            builder.append(");\n");
-            builder.append("CREATE VIEW TMP0 AS SELECT ");
-            body.unparse(writer, 0, 0);
-            builder.append(" FROM TMP;");
+            String sql;
+            if (!body.isA(SqlKind.QUERY)) {
+                builder.append("CREATE TABLE TMP(");
+                decl.getParameters().unparse(writer, 0, 0);
+                builder.append(");\n");
+                builder.append("CREATE VIEW TMP0 AS SELECT ");
+                body.unparse(writer, 0, 0);
+                builder.append(" FROM TMP;");
+                sql = builder.toString();
+            } else {
+                SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
+                try {
+                    // Parse the SQL query
+                    SqlNode sqlNode = parser.parseQuery();
 
-            String sql = builder.toString();
+                    if (sqlNode instanceof SqlSelect) {
+                        SqlSelect select = (SqlSelect) sqlNode;
+
+                        // Get the SELECT identifier
+                        SqlNode selectNode = select.getSelectList().get(0);
+
+                        // Get the FROM identifier
+                        SqlNode fromNode = select.getFrom();
+
+                        builder.append("CREATE VIEW TEMP_VIEW AS\nSELECT *\nFROM ");
+                        fromNode.unparse(writer, 0, 0);
+                        builder.append(";\n\n");
+
+                        builder.append("CREATE VIEW EXTENDED_VIEW AS\n");
+                        builder.append("SELECT *,");
+                        Iterator<SqlNode> iterator = decl.getParameters().iterator();
+                        while (iterator.hasNext()) {
+                            SqlNode column = iterator.next();
+                            String columnString = column.toString();
+                            String[] parts = columnString.split(" ");
+                            String columnName = parts[0].replace("`", ""); // "USERAGE"
+                            String columnType = parts[1].replace("`", ""); // "INT64"
+                            builder.append(" CAST (NULL AS " + columnType + ") AS " + columnName);
+                            if (iterator.hasNext()) {
+                                builder.append(", ");
+                            }
+                        }
+                        builder.append("\nFROM TEMP_VIEW;\n\n");
+
+                        // Get the WHERE condition
+                        SqlNode whereNode = select.getWhere();
+                        if (whereNode instanceof SqlBasicCall) {
+                            String rebuiltWhere = whereNode.toString().replace(fromNode.toString(), "EXTENDED_VIEW");
+                            rebuiltWhere = rebuiltWhere.replace("`", "");
+                            builder.append(
+                                    "CREATE VIEW TMP AS\nSELECT " + selectNode.toString()
+                                            + " AS RESULT\nFROM EXTENDED_VIEW\nWHERE " + rebuiltWhere + ";\n");
+                        }
+                    }
+                } catch (SqlParseException e) {
+                    e.printStackTrace();
+                }
+                sql = builder.toString();
+                System.out.println(sql);
+            }
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
             FrontEndStatement statement = null;
-            for (SqlNode node: list) {
-                statement = clone.compile(node.toString(), node, null);
-            }
-
-            CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
-            assert view != null;
-            RelNode node = view.getRelNode();
             ProjectExtractor extractor = new ProjectExtractor();
-            extractor.go(node);
+            for (SqlNode node : list) {
+                statement = clone.compile(node.toString(), node, null);
+                if (node instanceof SqlCreateView) {
+                    CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
+                    assert view != null;
+                    RelNode rNode = view.getRelNode();
+                    extractor.go(rNode);
+                }
+            }
+            System.out.println(extractor.body);
+            // CreateViewStatement view =
+            // Objects.requireNonNull(statement).as(CreateViewStatement.class);
+            // assert view != null;
+            // RelNode node = view.getRelNode();
+            // ProjectExtractor extractor = new ProjectExtractor();
+            // extractor.go(node);
             return Objects.requireNonNull(extractor.body);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
         }
     }
 
-    /** Compile a SQL statement.
+    /**
+     * Compile a SQL statement.
+     *
      * @param node         Compiled version of the SQL statement.
      * @param sqlStatement SQL statement as a string to compile.
-     * @param comment      Additional information about the compiled statement. */
+     * @param comment      Additional information about the compiled statement.
+     */
     @Nullable
     public FrontEndStatement compile(
             String sqlStatement,
@@ -806,15 +925,15 @@ public class CalciteCompiler implements IWritesLogs {
                 } else {
                     throw new UnimplementedException();
                     /*
-                    if (ct.query == null)
-                        throw new UnsupportedException("CREATE TABLE cannot contain a query",
-                                CalciteObject.create(node));
-                    Logger.INSTANCE.belowLevel(this, 1)
-                            .append(ct.query.toString())
-                            .newline();
-                    RelRoot relRoot = converter.convertQuery(ct.query, true, true);
-                    cols = this.createColumnsMetadata(
-                            ct.name, false, relRoot, null);
+                     * if (ct.query == null)
+                     * throw new UnsupportedException("CREATE TABLE cannot contain a query",
+                     * CalciteObject.create(node));
+                     * Logger.INSTANCE.belowLevel(this, 1)
+                     * .append(ct.query.toString())
+                     * .newline();
+                     * RelRoot relRoot = converter.convertQuery(ct.query, true, true);
+                     * cols = this.createColumnsMetadata(
+                     * ct.name, false, relRoot, null);
                      */
                 }
                 CreateTableStatement table = new CreateTableStatement(
@@ -839,7 +958,7 @@ public class CalciteCompiler implements IWritesLogs {
                 RelDataType returnType = this.specToRel(retType);
                 Boolean nullableResult = retType.getNullable();
                 if (nullableResult != null)
-                    returnType = this.typeFactory.createTypeWithNullability(returnType,  nullableResult);
+                    returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
                 RexNode bodyExp = this.createFunction(decl);
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
@@ -865,7 +984,8 @@ public class CalciteCompiler implements IWritesLogs {
                         cv.name.getSimple(), Utilities.identifierIsQuoted(cv.name),
                         comment, columns, cv.query, relRoot);
                 // From Calcite's point of view we treat this view just as another table.
-                boolean success = this.calciteCatalog.addTable(viewName, view.getEmulatedTable(), this.errorReporter, view);
+                boolean success = this.calciteCatalog.addTable(viewName, view.getEmulatedTable(), this.errorReporter,
+                        view);
                 if (!success)
                     return null;
                 return view;
@@ -881,8 +1001,7 @@ public class CalciteCompiler implements IWritesLogs {
                             return CalciteCompiler.this.udt.get(name);
                         final RelDataTypeFactory.Builder builder = typeFactory.builder();
                         for (SqlNode def : Objects.requireNonNull(ct.attributeDefs)) {
-                            final SqlAttributeDefinition attributeDef =
-                                    (SqlAttributeDefinition) def;
+                            final SqlAttributeDefinition attributeDef = (SqlAttributeDefinition) def;
                             final SqlDataTypeSpec typeSpec = attributeDef.dataType;
                             final RelDataType type = this.specToRel(typeSpec);
                             builder.add(attributeDef.name.getSimple(), type);
@@ -910,7 +1029,8 @@ public class CalciteCompiler implements IWritesLogs {
                 if (!(table instanceof SqlIdentifier))
                     throw new UnimplementedException(CalciteObject.create(table));
                 SqlIdentifier id = (SqlIdentifier) table;
-                TableModifyStatement stat = new TableModifyStatement(node, true, sqlStatement, id.toString(), insert.getSource(), comment);
+                TableModifyStatement stat = new TableModifyStatement(node, true, sqlStatement, id.toString(),
+                        insert.getSource(), comment);
                 RelRoot values = converter.convertQuery(stat.data, true, true);
                 values = values.withRel(this.optimize(values.rel));
                 stat.setTranslation(values.rel);
@@ -925,7 +1045,8 @@ public class CalciteCompiler implements IWritesLogs {
                     if (!(table instanceof SqlIdentifier))
                         throw new UnimplementedException(CalciteObject.create(table));
                     SqlIdentifier id = (SqlIdentifier) table;
-                    TableModifyStatement stat = new TableModifyStatement(node, false, sqlStatement, id.toString(), insert.getSource(), comment);
+                    TableModifyStatement stat = new TableModifyStatement(node, false, sqlStatement, id.toString(),
+                            insert.getSource(), comment);
                     RelRoot values = converter.convertQuery(stat.data, true, true);
                     values = values.withRel(this.optimize(values.rel));
                     stat.setTranslation(values.rel);
