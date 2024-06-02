@@ -237,7 +237,8 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             if (this.hasErrors())
                 return;
 
-            // Compile first the statements that define functions and types
+            // Compile first the statements that define functions and types, except for
+            // tableFunctions
             List<SqlFunction> functions = new ArrayList<>();
             List<SqlNode> tableFunctNodes = new ArrayList<>();
             for (SqlNode node : parsed) {
@@ -282,10 +283,22 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 }
             }
 
-            // Compile all statements which do not define functions or types
+            // Compile all statements that do not include tableFunctions
+            List<SqlNode> statementsWithTableFunct = new ArrayList<>();
             for (SqlNode node : parsed) {
                 SqlKind kind = node.getKind();
                 if (kind == SqlKind.CREATE_FUNCTION || kind == SqlKind.CREATE_TYPE)
+                    continue;
+                boolean parsable = true;
+                for (SqlNode functNode : tableFunctNodes) {
+                    SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) functNode;
+                    if (node.toString().contains(decl.getName().toString())) {
+                        statementsWithTableFunct.add(node);
+                        parsable = false;
+                        break;
+                    }
+                }
+                if (parsable == false)
                     continue;
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                 if (fe == null)
@@ -294,6 +307,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 this.midend.compile(fe);
             }
 
+            // Compile the statements that define tableFunctions
             List<SqlFunction> tableFunctions = new ArrayList<>();
             for (SqlNode node : tableFunctNodes) {
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
@@ -305,7 +319,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             }
 
             if (!tableFunctions.isEmpty()) {
-                // Reload the operator table to include all the newly defined functions
+                // Reload the operator table to include all the newly defined table functions
                 SqlOperatorTable newTable = SqlOperatorTables.of(tableFunctions);
                 this.frontend.addOperatorTable(newTable);
                 if (this.options.ioOptions.udfs.isEmpty()) {
@@ -315,6 +329,15 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                             "Program contains `CREATE FUNCTION` statements but the compiler" +
                                     " was invoked without the `-udf` flag");
                 }
+            }
+
+            // Compile the statements that include tableFunctions
+            for (SqlNode node : statementsWithTableFunct) {
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                if (fe == null)
+                    // error during compilation
+                    continue;
+                this.midend.compile(fe);
             }
 
         } catch (SqlParseException e) {

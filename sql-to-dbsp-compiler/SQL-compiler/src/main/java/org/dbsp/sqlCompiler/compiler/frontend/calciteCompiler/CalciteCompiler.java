@@ -861,7 +861,7 @@ public class CalciteCompiler implements IWritesLogs {
                     e.printStackTrace();
                 }
                 sql = builder.toString();
-                System.out.println(sql);
+                // System.out.println(sql);
             }
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
@@ -876,7 +876,7 @@ public class CalciteCompiler implements IWritesLogs {
                     extractor.go(rNode);
                 }
             }
-            System.out.println(extractor.body);
+            // System.out.println(extractor.body);
             // CreateViewStatement view =
             // Objects.requireNonNull(statement).as(CreateViewStatement.class);
             // assert view != null;
