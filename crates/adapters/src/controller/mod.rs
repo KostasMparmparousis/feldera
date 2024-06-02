@@ -449,7 +449,12 @@ impl Controller {
         let mut start: Option<Instant> = None;
         let min_storage_rows = if controller.status.pipeline_config.global.storage {
             // This reduces the files stored on disk to a reasonable number.
-            1_000_000
+            controller
+                .status
+                .pipeline_config
+                .global
+                .min_storage_rows
+                .unwrap_or(1000)
         } else {
             usize::MAX
         };
@@ -1229,6 +1234,12 @@ impl ControllerInner {
         let self_weak = Arc::downgrade(self);
 
         let is_fault_tolerant;
+
+        endpoint_config
+            .connector_config
+            .output_buffer_config
+            .validate()
+            .map_err(|e| ControllerError::invalid_output_buffer_configuration(endpoint_name, &e))?;
 
         let encoder = if let Some(mut endpoint) = endpoint {
             endpoint
