@@ -42,6 +42,7 @@ import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.logical.LogicalFilter;
+import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.logical.LogicalValues;
@@ -737,6 +738,8 @@ public class CalciteCompiler implements IWritesLogs {
         @Nullable
         RexNode condition = null;
         @Nullable
+        RexNode joinCondition = null;
+        @Nullable
         String function = null;
 
         <T> boolean visitIfMatches(RelNode node, Class<T> clazz, Consumer<T> method) {
@@ -748,7 +751,7 @@ public class CalciteCompiler implements IWritesLogs {
             return false;
         }
 
-        void visitScan(TableScan scan) {
+        void visitScan(LogicalTableScan scan) {
             // nothing
         }
 
@@ -760,6 +763,10 @@ public class CalciteCompiler implements IWritesLogs {
 
         void visitFilter(LogicalFilter filter) {
             this.condition = filter.getCondition();
+        }
+
+        void visitJoin(LogicalJoin join) {
+            this.joinCondition = join.getCondition();
         }
 
         void visitAggregate(LogicalAggregate aggregate) {
@@ -778,7 +785,8 @@ public class CalciteCompiler implements IWritesLogs {
             boolean success = this.visitIfMatches(node, LogicalTableScan.class, this::visitScan) ||
                     this.visitIfMatches(node, LogicalProject.class, this::visitProject) ||
                     this.visitIfMatches(node, LogicalFilter.class, this::visitFilter) ||
-                    this.visitIfMatches(node, LogicalAggregate.class, this::visitAggregate);
+                    this.visitIfMatches(node, LogicalAggregate.class, this::visitAggregate) ||
+                    this.visitIfMatches(node, LogicalJoin.class, this::visitJoin);
             if (!success)
                 // Anything else is an exception
                 throw new UnimplementedException("Function too complex", CalciteObject.create(node));
@@ -804,14 +812,14 @@ public class CalciteCompiler implements IWritesLogs {
             StringBuilder builder = new StringBuilder();
             SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
             String sql;
+            builder.append("CREATE TABLE TMP(");
+            decl.getParameters().unparse(writer, 0, 0);
+            builder.append(");\n");
             if (!body.isA(SqlKind.QUERY)) {
-                builder.append("CREATE TABLE TMP(");
-                decl.getParameters().unparse(writer, 0, 0);
-                builder.append(");\n");
                 builder.append("CREATE VIEW TMP0 AS SELECT ");
                 body.unparse(writer, 0, 0);
                 builder.append(" FROM TMP;");
-                sql = builder.toString();
+
             } else {
                 SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
                 try {
@@ -827,62 +835,45 @@ public class CalciteCompiler implements IWritesLogs {
                         // Get the FROM identifier
                         SqlNode fromNode = select.getFrom();
 
-                        builder.append("CREATE VIEW TEMP_VIEW AS\nSELECT *\nFROM ");
-                        fromNode.unparse(writer, 0, 0);
-                        builder.append(";\n\n");
-
-                        builder.append("CREATE VIEW EXTENDED_VIEW AS\n");
-                        builder.append("SELECT *,");
-                        Iterator<SqlNode> iterator = decl.getParameters().iterator();
-                        while (iterator.hasNext()) {
-                            SqlNode column = iterator.next();
-                            String columnString = column.toString();
-                            String[] parts = columnString.split(" ");
-                            String columnName = parts[0].replace("`", ""); // "USERAGE"
-                            String columnType = parts[1].replace("`", ""); // "INT64"
-                            builder.append(" CAST (NULL AS " + columnType + ") AS " + columnName);
-                            if (iterator.hasNext()) {
-                                builder.append(", ");
-                            }
-                        }
-                        builder.append("\nFROM TEMP_VIEW;\n\n");
-
                         // Get the WHERE condition
                         SqlNode whereNode = select.getWhere();
+
+                        builder.append("CREATE VIEW TMP0 AS\nSELECT " + selectNode.toString() + " FROM "
+                                + fromNode.toString() + ", TMP\nWHERE");
+
                         if (whereNode instanceof SqlBasicCall) {
-                            String rebuiltWhere = whereNode.toString().replace(fromNode.toString(), "EXTENDED_VIEW");
-                            rebuiltWhere = rebuiltWhere.replace("`", "");
-                            builder.append(
-                                    "CREATE VIEW TMP AS\nSELECT " + selectNode.toString()
-                                            + " AS RESULT\nFROM EXTENDED_VIEW\nWHERE " + rebuiltWhere + ";\n");
+                            Iterator<SqlNode> paramIterator = decl.getParameters().iterator();
+                            while (paramIterator.hasNext()) {
+                                SqlNode column = paramIterator.next();
+                                String columnString = column.toString();
+                                String columnName = columnString.split(" ")[0].replace("`", "");
+                                String rebuiltWhere = whereNode.toString().replace(columnName, "TMP." + columnName)
+                                        .replace("`", "");
+                                builder.append(" " + rebuiltWhere);
+                            }
                         }
+
                     }
                 } catch (SqlParseException e) {
                     e.printStackTrace();
                 }
-                sql = builder.toString();
-                // System.out.println(sql);
             }
+            sql = builder.toString();
+            System.out.println(sql);
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
             FrontEndStatement statement = null;
-            ProjectExtractor extractor = new ProjectExtractor();
             for (SqlNode node : list) {
                 statement = clone.compile(node.toString(), node, null);
-                if (node instanceof SqlCreateView) {
-                    CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
-                    assert view != null;
-                    RelNode rNode = view.getRelNode();
-                    extractor.go(rNode);
-                }
             }
-            System.out.println(extractor.body);
-            // CreateViewStatement view =
-            // Objects.requireNonNull(statement).as(CreateViewStatement.class);
-            // assert view != null;
-            // RelNode node = view.getRelNode();
-            // ProjectExtractor extractor = new ProjectExtractor();
-            // extractor.go(node);
+
+            CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
+            assert view != null;
+            RelNode node = view.getRelNode();
+            ProjectExtractor extractor = new ProjectExtractor();
+            System.out.println(RelOptUtil.toString(node));
+            extractor.go(node);
+            System.out.println(extractor.condition);
             return Objects.requireNonNull(extractor.body);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
