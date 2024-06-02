@@ -876,7 +876,7 @@ public class CalciteCompiler implements IWritesLogs {
                     extractor.go(rNode);
                 }
             }
-            // System.out.println(extractor.body);
+            System.out.println(extractor.body);
             // CreateViewStatement view =
             // Objects.requireNonNull(statement).as(CreateViewStatement.class);
             // assert view != null;
