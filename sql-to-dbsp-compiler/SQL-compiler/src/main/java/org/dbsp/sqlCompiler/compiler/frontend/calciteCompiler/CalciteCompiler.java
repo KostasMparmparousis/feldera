@@ -108,6 +108,7 @@ import org.apache.calcite.sql2rel.RelDecorrelator;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
 import org.apache.calcite.sql2rel.StandardConvertletTable;
 import org.apache.calcite.tools.RelBuilder;
+import org.apache.calcite.util.Pair;
 import org.dbsp.generated.parser.DbspParserImpl;
 import org.dbsp.sqlCompiler.compiler.CompilerOptions;
 import org.dbsp.sqlCompiler.compiler.IErrorReporter;
@@ -135,7 +136,6 @@ import org.dbsp.util.Logger;
 import org.dbsp.util.Utilities;
 
 import com.google.common.collect.ImmutableList;
-
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -790,43 +790,8 @@ public class CalciteCompiler implements IWritesLogs {
         }
     }
 
-    private static void collectRexNodes(RelNode relNode, List<RexNode> rexNodeList) {
-        if (relNode instanceof LogicalFilter) {
-            LogicalFilter filter = (LogicalFilter) relNode;
-            rexNodeList.add(filter.getCondition());
-            collectRexNodes(filter.getInput(), rexNodeList);
-        } else if (relNode instanceof LogicalJoin) {
-            LogicalJoin join = (LogicalJoin) relNode;
-            rexNodeList.add(join.getCondition());
-            collectRexNodes(join.getLeft(), rexNodeList);
-            collectRexNodes(join.getRight(), rexNodeList);
-        } else if (relNode instanceof LogicalAggregate) {
-            LogicalAggregate aggregate = (LogicalAggregate) relNode;
-            System.out.println(aggregate.getAggCallList());
-            List<AggregateCall> aggCallList = aggregate.getAggCallList();
-            for (AggregateCall aggCall : aggCallList) {
-                // TODO: Add aggCall to rexNodeList
-            }
-            collectRexNodes(aggregate.getInput(), rexNodeList);
-        } else {
-            for (RelNode input : relNode.getInputs()) {
-                collectRexNodes(input, rexNodeList);
-            }
-        }
-    }
-
-    private static RexNode combineRexNodes(RexBuilder rexBuilder, List<RexNode> rexNodeList) {
-        if (rexNodeList.isEmpty()) {
-            return null;
-        } else if (rexNodeList.size() == 1) {
-            return rexNodeList.get(0);
-        } else {
-            return rexBuilder.makeCall(org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, rexNodeList);
-        }
-    }
-
     @Nullable
-    RexNode createFunction(SqlCreateFunctionDeclaration decl) {
+    Pair<RexNode, CreateViewStatement> createFunction(SqlCreateFunctionDeclaration decl) {
         SqlNode body = decl.getBody();
         if (body == null)
             return null;
@@ -901,23 +866,11 @@ public class CalciteCompiler implements IWritesLogs {
             CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
             assert view != null;
             RelNode node = view.getRelNode();
-
-            // RelOptCluster cluster = node.getCluster();
-            // RexBuilder rexBuilder = cluster.getRexBuilder();
-
-            // List<RexNode> rexNodeList = new ArrayList<>();
-            // collectRexNodes(node, rexNodeList);
-            // RexNode combinedRexNode = combineRexNodes(rexBuilder, rexNodeList);
-
-            // System.out.println(node.toString());
-            // // Print the combined RexNode
-            // System.out.println("Combined RexNode: " + combinedRexNode);
-
             ProjectExtractor extractor = new ProjectExtractor();
             System.out.println(RelOptUtil.toString(node));
             extractor.go(node);
             System.out.println(extractor.body);
-            return Objects.requireNonNull(extractor.body);
+            return new Pair<RexNode, CreateViewStatement>(extractor.body, view);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
         }
@@ -993,7 +946,18 @@ public class CalciteCompiler implements IWritesLogs {
                 Boolean nullableResult = retType.getNullable();
                 if (nullableResult != null)
                     returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
-                RexNode bodyExp = this.createFunction(decl);
+                Pair<RexNode, CreateViewStatement> udf = this.createFunction(decl);
+                System.out.println("TESTTTTTTTTTTTTTT " + udf.getKey());
+                RexNode bodyExp = udf.getKey();
+                SqlNode body = decl.getBody();
+                if (bodyExp == null && body.isA(SqlKind.QUERY)) {
+                    CreateViewStatement view = udf.getValue();
+                    boolean success = this.calciteCatalog.addTable("TMP", view.getEmulatedTable(), this.errorReporter,
+                            view);
+                    if (!success)
+                        return null;
+                    return view;
+                }
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
                 return new CreateFunctionStatement(node, sqlStatement, function);
