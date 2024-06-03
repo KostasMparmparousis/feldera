@@ -316,6 +316,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                     continue;
                 tableFunctions.add(fe.to(CreateFunctionStatement.class).function);
                 this.midend.compile(fe);
+                System.out.println("DONE WITH MIDEND COMPILING");
             }
 
             if (!tableFunctions.isEmpty()) {

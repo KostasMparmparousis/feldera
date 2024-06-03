@@ -770,7 +770,6 @@ public class CalciteCompiler implements IWritesLogs {
             for (AggregateCall call : aggregate.getAggCallList()) {
                 SqlOperator operator = call.getAggregation();
                 if (operator.getKind() == SqlKind.COUNT) {
-                    System.out.println("COUNT XDDDDDDDDDDDDDDDD");
                     this.function = "COUNT(*)";
                 }
             }
@@ -875,9 +874,9 @@ public class CalciteCompiler implements IWritesLogs {
             System.out.println(node.toString());
             System.out.println(RelOptUtil.toString(node));
             extractor.go(node);
-            System.out.println(extractor.body);
             return Objects.requireNonNull(extractor.body);
         } catch (SqlParseException e) {
+            // System.out.println("I AM HEREEEEE");
             throw new RuntimeException(e);
         }
     }
@@ -946,13 +945,18 @@ public class CalciteCompiler implements IWritesLogs {
                             RelDataType type = this.specToRel(attr.dataType);
                             return new MapEntry<>(name, type);
                         });
-                RelDataType structType = this.typeFactory.createStructType(parameters);
                 SqlDataTypeSpec retType = decl.getReturnType();
                 RelDataType returnType = this.specToRel(retType);
                 Boolean nullableResult = retType.getNullable();
                 if (nullableResult != null)
                     returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
                 RexNode bodyExp = this.createFunction(decl);
+                System.out.println("---------------------");
+                System.out.println(bodyExp);
+                System.out.println(parameters);
+                System.out.println("---------------------");
+                // TODO: Add hidden parameters
+                RelDataType structType = this.typeFactory.createStructType(parameters);
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
                 return new CreateFunctionStatement(node, sqlStatement, function);
