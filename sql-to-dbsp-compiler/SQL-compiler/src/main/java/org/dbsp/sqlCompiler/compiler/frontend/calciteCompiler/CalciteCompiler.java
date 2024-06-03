@@ -147,6 +147,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.function.Consumer;
 import java.util.Iterator;
+import org.apache.commons.lang3.tuple.Triple;
 
 /**
  * The calcite compiler compiles SQL into Calcite RelNode representations.
@@ -791,7 +792,7 @@ public class CalciteCompiler implements IWritesLogs {
     }
 
     @Nullable
-    Pair<RexNode, CreateViewStatement> createFunction(SqlCreateFunctionDeclaration decl) {
+    Triple<RexNode, CreateViewStatement, CreateTableStatement> createFunction(SqlCreateFunctionDeclaration decl) {
         SqlNode body = decl.getBody();
         if (body == null)
             return null;
@@ -859,18 +860,23 @@ public class CalciteCompiler implements IWritesLogs {
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
             FrontEndStatement statement = null;
+            CreateViewStatement tempView = null;
+            CreateTableStatement tempTable = null;
             for (SqlNode node : list) {
+                System.out.println(node.toString());
                 statement = clone.compile(node.toString(), node, null);
+                if (statement instanceof CreateTableStatement)
+                    tempTable = Objects.requireNonNull(statement).as(CreateTableStatement.class);
+                else if (statement instanceof CreateViewStatement)
+                    tempView = Objects.requireNonNull(statement).as(CreateViewStatement.class);
             }
 
-            CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
-            assert view != null;
-            RelNode node = view.getRelNode();
+            assert tempView != null;
+            assert tempTable != null;
+            RelNode node = tempView.getRelNode();
             ProjectExtractor extractor = new ProjectExtractor();
             System.out.println(RelOptUtil.toString(node));
-            extractor.go(node);
-            System.out.println(extractor.body);
-            return new Pair<RexNode, CreateViewStatement>(extractor.body, view);
+            return Triple.of(extractor.body, tempView, tempTable);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
         }
@@ -946,13 +952,18 @@ public class CalciteCompiler implements IWritesLogs {
                 Boolean nullableResult = retType.getNullable();
                 if (nullableResult != null)
                     returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
-                Pair<RexNode, CreateViewStatement> udf = this.createFunction(decl);
-                System.out.println("TESTTTTTTTTTTTTTT " + udf.getKey());
-                RexNode bodyExp = udf.getKey();
+                Triple<RexNode, CreateViewStatement, CreateTableStatement> udf = this.createFunction(decl);
+                RexNode bodyExp = udf.getLeft();
                 SqlNode body = decl.getBody();
                 if (bodyExp == null && body.isA(SqlKind.QUERY)) {
-                    CreateViewStatement view = udf.getValue();
-                    boolean success = this.calciteCatalog.addTable("TMP", view.getEmulatedTable(), this.errorReporter,
+                    System.out.println(body.toString());
+                    CreateViewStatement view = udf.getMiddle();
+                    CreateTableStatement table = udf.getRight();
+                    boolean success = this.calciteCatalog.addTable("TMP", table.getEmulatedTable(), this.errorReporter,
+                            table);
+                    if (!success)
+                        return null;
+                    success = this.calciteCatalog.addTable("TMP0", view.getEmulatedTable(), this.errorReporter,
                             view);
                     if (!success)
                         return null;

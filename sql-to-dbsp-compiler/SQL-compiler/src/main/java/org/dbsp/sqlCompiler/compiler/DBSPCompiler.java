@@ -34,6 +34,7 @@ import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlOperatorTable;
 import org.apache.calcite.sql.ddl.SqlCreateFunction;
+import org.apache.calcite.sql.ddl.SqlCreateView;
 import org.apache.calcite.sql.parser.SqlParseException;
 import org.apache.calcite.sql.util.SqlOperatorTables;
 import org.dbsp.sqlCompiler.circuit.DBSPCircuit;
@@ -52,6 +53,7 @@ import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CalciteCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CustomFunctions;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateFunctionStatement;
+import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateViewStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.FrontEndStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.IHasSchema;
 import org.dbsp.sqlCompiler.compiler.visitors.outer.CircuitOptimizer;
@@ -283,7 +285,8 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 }
             }
 
-            // Compile all statements that do not include tableFunctions
+            // Compile all statements that do not include types, functions, or
+            // tableFunctions
             List<SqlNode> statementsWithTableFunct = new ArrayList<>();
             for (SqlNode node : parsed) {
                 SqlKind kind = node.getKind();
@@ -308,28 +311,20 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             }
 
             // Compile the statements that define tableFunctions
-            List<SqlFunction> tableFunctions = new ArrayList<>();
             for (SqlNode node : tableFunctNodes) {
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                 if (fe == null)
                     // error during compilation
                     continue;
-                tableFunctions.add(fe.to(CreateFunctionStatement.class).function);
                 this.midend.compile(fe);
+
             }
 
-            if (!tableFunctions.isEmpty()) {
-                // Reload the operator table to include all the newly defined table functions
-                SqlOperatorTable newTable = SqlOperatorTables.of(tableFunctions);
-                this.frontend.addOperatorTable(newTable);
-                if (this.options.ioOptions.udfs.isEmpty()) {
-                    this.getCompiler().reportWarning(
-                            SourcePositionRange.INVALID,
-                            "No UDFs",
-                            "Program contains `CREATE FUNCTION` statements but the compiler" +
-                                    " was invoked without the `-udf` flag");
-                }
-            }
+            // if (!tableFunctionViews.isEmpty()) {
+            // // Reload the operator table to include all the newly defined table functions
+            // SqlOperatorTable newTable = SqlOperatorTables.of(tableFunctionViews);
+            // this.frontend.addOperatorTable(newTable);
+            // }
 
             // Compile the statements that include tableFunctions
             for (SqlNode node : statementsWithTableFunct) {
