@@ -60,6 +60,7 @@ import org.apache.calcite.runtime.MapEntry;
 import org.apache.calcite.schema.Function;
 import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.SchemaPlus;
+import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlBasicTypeNameSpec;
 import org.apache.calcite.sql.SqlBinaryOperator;
@@ -132,6 +133,8 @@ import org.dbsp.util.IWritesLogs;
 import org.dbsp.util.Linq;
 import org.dbsp.util.Logger;
 import org.dbsp.util.Utilities;
+
+import com.google.common.collect.ImmutableList;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
@@ -736,10 +739,6 @@ public class CalciteCompiler implements IWritesLogs {
         @Nullable
         RexNode body = null;
         @Nullable
-        RexNode condition = null;
-        @Nullable
-        RexNode joinCondition = null;
-        @Nullable
         String function = null;
 
         <T> boolean visitIfMatches(RelNode node, Class<T> clazz, Consumer<T> method) {
@@ -762,11 +761,9 @@ public class CalciteCompiler implements IWritesLogs {
         }
 
         void visitFilter(LogicalFilter filter) {
-            this.condition = filter.getCondition();
         }
 
         void visitJoin(LogicalJoin join) {
-            this.joinCondition = join.getCondition();
         }
 
         void visitAggregate(LogicalAggregate aggregate) {
@@ -790,6 +787,41 @@ public class CalciteCompiler implements IWritesLogs {
             if (!success)
                 // Anything else is an exception
                 throw new UnimplementedException("Function too complex", CalciteObject.create(node));
+        }
+    }
+
+    private static void collectRexNodes(RelNode relNode, List<RexNode> rexNodeList) {
+        if (relNode instanceof LogicalFilter) {
+            LogicalFilter filter = (LogicalFilter) relNode;
+            rexNodeList.add(filter.getCondition());
+            collectRexNodes(filter.getInput(), rexNodeList);
+        } else if (relNode instanceof LogicalJoin) {
+            LogicalJoin join = (LogicalJoin) relNode;
+            rexNodeList.add(join.getCondition());
+            collectRexNodes(join.getLeft(), rexNodeList);
+            collectRexNodes(join.getRight(), rexNodeList);
+        } else if (relNode instanceof LogicalAggregate) {
+            LogicalAggregate aggregate = (LogicalAggregate) relNode;
+            System.out.println(aggregate.getAggCallList());
+            List<AggregateCall> aggCallList = aggregate.getAggCallList();
+            for (AggregateCall aggCall : aggCallList) {
+                // TODO: Add aggCall to rexNodeList
+            }
+            collectRexNodes(aggregate.getInput(), rexNodeList);
+        } else {
+            for (RelNode input : relNode.getInputs()) {
+                collectRexNodes(input, rexNodeList);
+            }
+        }
+    }
+
+    private static RexNode combineRexNodes(RexBuilder rexBuilder, List<RexNode> rexNodeList) {
+        if (rexNodeList.isEmpty()) {
+            return null;
+        } else if (rexNodeList.size() == 1) {
+            return rexNodeList.get(0);
+        } else {
+            return rexBuilder.makeCall(org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, rexNodeList);
         }
     }
 
@@ -852,7 +884,6 @@ public class CalciteCompiler implements IWritesLogs {
                                 builder.append(" " + rebuiltWhere);
                             }
                         }
-
                     }
                 } catch (SqlParseException e) {
                     e.printStackTrace();
@@ -870,10 +901,22 @@ public class CalciteCompiler implements IWritesLogs {
             CreateViewStatement view = Objects.requireNonNull(statement).as(CreateViewStatement.class);
             assert view != null;
             RelNode node = view.getRelNode();
+
+            // RelOptCluster cluster = node.getCluster();
+            // RexBuilder rexBuilder = cluster.getRexBuilder();
+
+            // List<RexNode> rexNodeList = new ArrayList<>();
+            // collectRexNodes(node, rexNodeList);
+            // RexNode combinedRexNode = combineRexNodes(rexBuilder, rexNodeList);
+
+            // System.out.println(node.toString());
+            // // Print the combined RexNode
+            // System.out.println("Combined RexNode: " + combinedRexNode);
+
             ProjectExtractor extractor = new ProjectExtractor();
             System.out.println(RelOptUtil.toString(node));
             extractor.go(node);
-            System.out.println(extractor.condition);
+            System.out.println(extractor.body);
             return Objects.requireNonNull(extractor.body);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
