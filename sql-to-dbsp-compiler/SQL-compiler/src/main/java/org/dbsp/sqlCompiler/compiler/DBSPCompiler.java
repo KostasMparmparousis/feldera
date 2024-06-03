@@ -250,7 +250,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                         .newline();
                 SqlKind kind = node.getKind();
                 if (kind == SqlKind.CREATE_TYPE) {
-                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment).get(0);
                     if (fe == null)
                         // error during compilation
                         continue;
@@ -264,7 +264,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                         tableFunctNodes.add(node);
                         continue;
                     }
-                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment).get(0);
                     if (fe == null)
                         continue;
                     functions.add(fe.to(CreateFunctionStatement.class).function);
@@ -303,7 +303,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 }
                 if (parsable == false)
                     continue;
-                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment).get(0);
                 if (fe == null)
                     // error during compilation
                     continue;
@@ -312,12 +312,12 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
             // Compile the statements that define tableFunctions
             for (SqlNode node : tableFunctNodes) {
-                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
-                if (fe == null)
-                    // error during compilation
-                    continue;
-                this.midend.compile(fe);
-
+                for (FrontEndStatement fe : this.frontend.compile(node.toString(), node, comment)) {
+                    if (fe == null)
+                        // error during compilation
+                        continue;
+                    this.midend.compile(fe);
+                }
             }
 
             // if (!tableFunctionViews.isEmpty()) {
@@ -328,7 +328,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
             // Compile the statements that include tableFunctions
             for (SqlNode node : statementsWithTableFunct) {
-                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment).get(0);
                 if (fe == null)
                     // error during compilation
                     continue;

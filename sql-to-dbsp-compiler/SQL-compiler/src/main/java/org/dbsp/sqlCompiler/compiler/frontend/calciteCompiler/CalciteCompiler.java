@@ -856,26 +856,27 @@ public class CalciteCompiler implements IWritesLogs {
                 }
             }
             sql = builder.toString();
-            System.out.println(sql);
+            // System.out.println(sql);
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
             FrontEndStatement statement = null;
             CreateViewStatement tempView = null;
             CreateTableStatement tempTable = null;
             for (SqlNode node : list) {
-                System.out.println(node.toString());
-                statement = clone.compile(node.toString(), node, null);
-                if (statement instanceof CreateTableStatement)
-                    tempTable = Objects.requireNonNull(statement).as(CreateTableStatement.class);
-                else if (statement instanceof CreateViewStatement)
-                    tempView = Objects.requireNonNull(statement).as(CreateViewStatement.class);
+                // System.out.println(node.toString());
+                for (FrontEndStatement fe : clone.compile(node.toString(), node, null)) {
+                    statement = fe;
+                    if (statement instanceof CreateTableStatement)
+                        tempTable = Objects.requireNonNull(statement).as(CreateTableStatement.class);
+                    else if (statement instanceof CreateViewStatement)
+                        tempView = Objects.requireNonNull(statement).as(CreateViewStatement.class);
+                }
             }
-
             assert tempView != null;
             assert tempTable != null;
             RelNode node = tempView.getRelNode();
             ProjectExtractor extractor = new ProjectExtractor();
-            System.out.println(RelOptUtil.toString(node));
+            // System.out.println(RelOptUtil.toString(node));
             return Triple.of(extractor.body, tempView, tempTable);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
@@ -890,7 +891,7 @@ public class CalciteCompiler implements IWritesLogs {
      * @param comment      Additional information about the compiled statement.
      */
     @Nullable
-    public FrontEndStatement compile(
+    public List<FrontEndStatement> compile(
             String sqlStatement,
             SqlNode node,
             @Nullable String comment) {
@@ -900,12 +901,14 @@ public class CalciteCompiler implements IWritesLogs {
                 .append(sqlStatement)
                 .newline();
         SqlKind kind = node.getKind();
+        List<FrontEndStatement> feStatements = new ArrayList<FrontEndStatement>();
         switch (kind) {
             case DROP_TABLE: {
                 SqlDropTable dt = (SqlDropTable) node;
                 String tableName = dt.name.getSimple();
                 this.calciteCatalog.dropTable(tableName);
-                return new DropTableStatement(node, sqlStatement, tableName, comment);
+                feStatements.add(new DropTableStatement(node, sqlStatement, tableName, comment));
+                return feStatements;
             }
             case CREATE_TABLE: {
                 SqlCreateTable ct = (SqlCreateTable) node;
@@ -935,7 +938,8 @@ public class CalciteCompiler implements IWritesLogs {
                         tableName, table.getEmulatedTable(), this.errorReporter, table);
                 if (!success)
                     return null;
-                return table;
+                feStatements.add(table);
+                return feStatements;
             }
             case CREATE_FUNCTION: {
                 SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) node;
@@ -956,7 +960,7 @@ public class CalciteCompiler implements IWritesLogs {
                 RexNode bodyExp = udf.getLeft();
                 SqlNode body = decl.getBody();
                 if (bodyExp == null && body.isA(SqlKind.QUERY)) {
-                    System.out.println(body.toString());
+                    // System.out.println(body.toString());
                     CreateViewStatement view = udf.getMiddle();
                     CreateTableStatement table = udf.getRight();
                     boolean success = this.calciteCatalog.addTable("TMP", table.getEmulatedTable(), this.errorReporter,
@@ -967,11 +971,15 @@ public class CalciteCompiler implements IWritesLogs {
                             view);
                     if (!success)
                         return null;
-                    return view;
+                    feStatements.add(table);
+                    feStatements.add(view);
+                    return feStatements;
                 }
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
-                return new CreateFunctionStatement(node, sqlStatement, function);
+                CreateFunctionStatement createFunction = new CreateFunctionStatement(node, sqlStatement, function);
+                feStatements.add(createFunction);
+                return feStatements;
             }
             case CREATE_VIEW: {
                 SqlToRelConverter converter = this.getConverter();
@@ -997,7 +1005,8 @@ public class CalciteCompiler implements IWritesLogs {
                         view);
                 if (!success)
                     return null;
-                return view;
+                feStatements.add(view);
+                return feStatements;
             }
             case CREATE_TYPE: {
                 SqlCreateType ct = (SqlCreateType) node;
@@ -1029,7 +1038,8 @@ public class CalciteCompiler implements IWritesLogs {
                 boolean success = this.calciteCatalog.addType(typeName, this.errorReporter, result);
                 if (!success)
                     return null;
-                return result;
+                feStatements.add(result);
+                return feStatements;
             }
             case INSERT: {
                 SqlToRelConverter converter = this.getConverter();
@@ -1043,7 +1053,8 @@ public class CalciteCompiler implements IWritesLogs {
                 RelRoot values = converter.convertQuery(stat.data, true, true);
                 values = values.withRel(this.optimize(values.rel));
                 stat.setTranslation(values.rel);
-                return stat;
+                feStatements.add(stat);
+                return feStatements;
             }
             case DELETE: {
                 // We expect this to be a REMOVE statement
@@ -1059,7 +1070,8 @@ public class CalciteCompiler implements IWritesLogs {
                     RelRoot values = converter.convertQuery(stat.data, true, true);
                     values = values.withRel(this.optimize(values.rel));
                     stat.setTranslation(values.rel);
-                    return stat;
+                    feStatements.add(stat);
+                    return feStatements;
                 }
                 break;
             }
@@ -1072,8 +1084,10 @@ public class CalciteCompiler implements IWritesLogs {
                 if (node instanceof SqlLateness) {
                     SqlLateness lateness = (SqlLateness) node;
                     RexNode expr = this.getConverter().convertExpression(lateness.getLateness());
-                    return new SqlLatenessStatement(lateness, sqlStatement,
+                    SqlLatenessStatement le = new SqlLatenessStatement(lateness, sqlStatement,
                             lateness.getView(), lateness.getColumn(), expr);
+                    feStatements.add(le);
+                    return feStatements;
                 }
                 break;
             }
