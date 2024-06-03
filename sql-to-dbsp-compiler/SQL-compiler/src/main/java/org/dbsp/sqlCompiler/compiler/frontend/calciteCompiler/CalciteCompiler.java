@@ -770,6 +770,7 @@ public class CalciteCompiler implements IWritesLogs {
             for (AggregateCall call : aggregate.getAggCallList()) {
                 SqlOperator operator = call.getAggregation();
                 if (operator.getKind() == SqlKind.COUNT) {
+                    System.out.println("COUNT XDDDDDDDDDDDDDDDD");
                     this.function = "COUNT(*)";
                 }
             }
@@ -787,41 +788,6 @@ public class CalciteCompiler implements IWritesLogs {
             if (!success)
                 // Anything else is an exception
                 throw new UnimplementedException("Function too complex", CalciteObject.create(node));
-        }
-    }
-
-    private static void collectRexNodes(RelNode relNode, List<RexNode> rexNodeList) {
-        if (relNode instanceof LogicalFilter) {
-            LogicalFilter filter = (LogicalFilter) relNode;
-            rexNodeList.add(filter.getCondition());
-            collectRexNodes(filter.getInput(), rexNodeList);
-        } else if (relNode instanceof LogicalJoin) {
-            LogicalJoin join = (LogicalJoin) relNode;
-            rexNodeList.add(join.getCondition());
-            collectRexNodes(join.getLeft(), rexNodeList);
-            collectRexNodes(join.getRight(), rexNodeList);
-        } else if (relNode instanceof LogicalAggregate) {
-            LogicalAggregate aggregate = (LogicalAggregate) relNode;
-            System.out.println(aggregate.getAggCallList());
-            List<AggregateCall> aggCallList = aggregate.getAggCallList();
-            for (AggregateCall aggCall : aggCallList) {
-                // TODO: Add aggCall to rexNodeList
-            }
-            collectRexNodes(aggregate.getInput(), rexNodeList);
-        } else {
-            for (RelNode input : relNode.getInputs()) {
-                collectRexNodes(input, rexNodeList);
-            }
-        }
-    }
-
-    private static RexNode combineRexNodes(RexBuilder rexBuilder, List<RexNode> rexNodeList) {
-        if (rexNodeList.isEmpty()) {
-            return null;
-        } else if (rexNodeList.size() == 1) {
-            return rexNodeList.get(0);
-        } else {
-            return rexBuilder.makeCall(org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, rexNodeList);
         }
     }
 
@@ -870,8 +836,7 @@ public class CalciteCompiler implements IWritesLogs {
                         // Get the WHERE condition
                         SqlNode whereNode = select.getWhere();
 
-                        builder.append("CREATE VIEW TMP0 AS\nSELECT " + selectNode.toString() + " FROM "
-                                + fromNode.toString() + ", TMP\nWHERE");
+                        builder.append("CREATE VIEW TMP0 AS\nSELECT COUNT(CASE WHEN");
 
                         if (whereNode instanceof SqlBasicCall) {
                             Iterator<SqlNode> paramIterator = decl.getParameters().iterator();
@@ -879,11 +844,15 @@ public class CalciteCompiler implements IWritesLogs {
                                 SqlNode column = paramIterator.next();
                                 String columnString = column.toString();
                                 String columnName = columnString.split(" ")[0].replace("`", "");
-                                String rebuiltWhere = whereNode.toString().replace(columnName, "TMP." + columnName)
+                                String rebuiltWhere = whereNode.toString().replace(columnName, "TMP." +
+                                        columnName)
                                         .replace("`", "");
                                 builder.append(" " + rebuiltWhere);
                             }
                         }
+
+                        builder.append(
+                                " THEN 1 ELSE NULL END) FROM TMP, " + fromNode.toString() + ";");
                     }
                 } catch (SqlParseException e) {
                     e.printStackTrace();
@@ -902,18 +871,8 @@ public class CalciteCompiler implements IWritesLogs {
             assert view != null;
             RelNode node = view.getRelNode();
 
-            // RelOptCluster cluster = node.getCluster();
-            // RexBuilder rexBuilder = cluster.getRexBuilder();
-
-            // List<RexNode> rexNodeList = new ArrayList<>();
-            // collectRexNodes(node, rexNodeList);
-            // RexNode combinedRexNode = combineRexNodes(rexBuilder, rexNodeList);
-
-            // System.out.println(node.toString());
-            // // Print the combined RexNode
-            // System.out.println("Combined RexNode: " + combinedRexNode);
-
             ProjectExtractor extractor = new ProjectExtractor();
+            System.out.println(node.toString());
             System.out.println(RelOptUtil.toString(node));
             extractor.go(node);
             System.out.println(extractor.body);
