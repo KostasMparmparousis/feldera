@@ -201,7 +201,7 @@ async fn program_creation() {
             "program desc",
             "ignored",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -217,7 +217,7 @@ async fn program_creation() {
         schema: None,
         code: None,
         config: ProgramConfig {
-            profile: CompilationProfile::Unoptimized,
+            profile: Some(CompilationProfile::Unoptimized),
         },
     };
     let actual = rows.get(0).unwrap();
@@ -234,7 +234,7 @@ async fn program_creation() {
         schema: None,
         code: Some("ignored".to_string()),
         config: ProgramConfig {
-            profile: CompilationProfile::Unoptimized,
+            profile: Some(CompilationProfile::Unoptimized),
         },
     };
     let actual = rows.get(0).unwrap();
@@ -251,7 +251,7 @@ async fn program_creation() {
         schema: None,
         code: None,
         config: ProgramConfig {
-            profile: CompilationProfile::Unoptimized,
+            profile: Some(CompilationProfile::Unoptimized),
         },
     };
     let (_, actual) = rows.get(0).unwrap();
@@ -272,7 +272,7 @@ async fn duplicate_program() {
             "program desc",
             "ignored",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -286,7 +286,7 @@ async fn duplicate_program() {
             "program desc",
             "ignored",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -309,7 +309,7 @@ async fn program_code() {
             "program desc",
             "create table t1(c1 integer);",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -341,7 +341,7 @@ async fn update_program() {
             "program desc",
             "create table t1(c1 integer);",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -406,7 +406,7 @@ async fn program_queries() {
             "program desc",
             "create table t1(c1 integer);",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -494,7 +494,7 @@ async fn project_pending() {
             "project desc",
             "ignored",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -509,7 +509,7 @@ async fn project_pending() {
             "project desc",
             "ignored",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -547,7 +547,7 @@ async fn update_status() {
             "program desc",
             "create table t1(c1 integer);",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -788,7 +788,7 @@ async fn versioning_no_change_no_connectors() {
             "",
             "",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -845,7 +845,7 @@ async fn versioning() {
             "program desc",
             "only schema matters--this isn't compiled",
             &ProgramConfig {
-                profile: CompilationProfile::Unoptimized,
+                profile: Some(CompilationProfile::Unoptimized),
             },
             None,
         )
@@ -985,6 +985,7 @@ async fn versioning() {
         min_batch_size_records: 0,
         max_buffering_delay_usecs: 0,
         resources: ResourceConfig::default(),
+        min_storage_rows: None,
     };
     handle
         .db
@@ -1299,7 +1300,9 @@ pub(crate) fn runtime_config() -> impl Strategy<Value = RuntimeConfig> {
             memory_mb_min: config.7,
             memory_mb_max: config.8,
             storage_mb_max: config.9,
+            storage_class: None,
         },
+        min_storage_rows: None,
     })
 }
 
@@ -1333,30 +1336,40 @@ pub(crate) fn option_runtime_config() -> impl Strategy<Value = Option<RuntimeCon
                 memory_mb_min: config.7,
                 memory_mb_max: config.8,
                 storage_mb_max: config.9,
+                storage_class: None,
             },
+            min_storage_rows: None,
         })
     })
 }
 
 /// Generate different program configurations
 pub(crate) fn program_config() -> impl Strategy<Value = ProgramConfig> {
-    any::<(bool,)>().prop_map(|config| ProgramConfig {
+    any::<(bool, bool)>().prop_map(|config| ProgramConfig {
         profile: if config.0 {
-            CompilationProfile::Unoptimized
+            None
         } else {
-            CompilationProfile::Optimized
+            if config.1 {
+                Some(CompilationProfile::Unoptimized)
+            } else {
+                Some(CompilationProfile::Optimized)
+            }
         },
     })
 }
 
 /// Generate different program configurations
 pub(crate) fn option_program_config() -> impl Strategy<Value = Option<ProgramConfig>> {
-    any::<Option<(bool,)>>().prop_map(|c| {
+    any::<Option<(bool, bool)>>().prop_map(|c| {
         c.map(|config| ProgramConfig {
             profile: if config.0 {
-                CompilationProfile::Unoptimized
+                None
             } else {
-                CompilationProfile::Optimized
+                if config.1 {
+                    Some(CompilationProfile::Unoptimized)
+                } else {
+                    Some(CompilationProfile::Optimized)
+                }
             },
         })
     })

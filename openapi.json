@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT OR Apache-2.0"
     },
-    "version": "0.16.0"
+    "version": "0.17.0"
   },
   "paths": {
     "/config/authentication": {
@@ -826,6 +826,7 @@
                   },
                   "max_buffering_delay_usecs": 0,
                   "min_batch_size_records": 0,
+                  "min_storage_rows": null,
                   "name": "pipeline-67e55044-10b1-426f-9247-bb680e5fe0c8",
                   "outputs": {
                     "Output-To-View": {
@@ -857,6 +858,7 @@
                     "cpu_cores_min": null,
                     "memory_mb_max": null,
                     "memory_mb_min": null,
+                    "storage_class": null,
                     "storage_mb_max": null
                   },
                   "storage": false,
@@ -1385,6 +1387,16 @@
             "name": "array",
             "in": "query",
             "description": "Set to `true` to group updates in this stream into JSON arrays (used in conjunction with `format=json`). The default value is `false`",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
+          },
+          {
+            "name": "backpressure",
+            "in": "query",
+            "description": "Apply backpressure on the pipeline when the HTTP client cannot receive data fast enough.\n        When this flag is set to false (the default), the HTTP connector drops data chunks if the client is not keeping up with its output.  This prevents a slow HTTP client from slowing down the entire pipeline.\n        When the flag is set to true, the connector waits for the client to receive each chunk and blocks the pipeline if the client cannot keep up.",
             "required": false,
             "schema": {
               "type": "boolean",
@@ -3243,7 +3255,7 @@
       },
       "CompilationProfile": {
         "type": "string",
-        "description": "Argument to `cargo build --profile <>` passed to the rust compiler\n\nNote that this is a hint to the backend, and can be overriden by\nthe Feldera instance depending on the administrator configuration.",
+        "description": "Enumeration of possible compilation profiles that can be passed to the Rust compiler\nas an argument via `cargo build --profile <>`. A compilation profile affects among\nother things the compilation speed (how long till the program is ready to be run)\nand runtime speed (the performance while running).",
         "enum": [
           "dev",
           "unoptimized",
@@ -3544,7 +3556,7 @@
         "properties": {
           "datetime": {
             "type": "string",
-            "description": "Optional timestamp for the snapshot in the ISO-8601/RFC-3339 format.\n\nWhen this option is set, the connector finds and opens the version of the table as of the\nspecified point in time.  In `snapshot` and `snapshot_and_follow` modes, it retrieves the\nsnapshot of this version of the table.  In `follow` and `snapshot_and_follow` modes, it\nfollows transaction log records **after** this version.\n\nNote: at most one of `version` and `datetime` options can be specified.\nWhen neither of the two options is specified, the latest committed version of the table\nis used.",
+            "description": "Optional timestamp for the snapshot in the ISO-8601/RFC-3339 format, e.g.,\n\"2024-12-09T16:09:53+00:00.\n\nWhen this option is set, the connector finds and opens the version of the table as of the\nspecified point in time.  In `snapshot` and `snapshot_and_follow` modes, it retrieves the\nsnapshot of this version of the table (based on the server time recorded in the transaction\nlog, not the event time encoded in the data).  In `follow` and `snapshot_and_follow` modes, it\nfollows transaction log records **after** this version.\n\nNote: at most one of `version` and `datetime` options can be specified.\nWhen neither of the two options is specified, the latest committed version of the table\nis used.",
             "nullable": true
           },
           "mode": {
@@ -3557,12 +3569,12 @@
           },
           "timestamp_column": {
             "type": "string",
-            "description": "Table column that serves as an event timestamp.\n\nWhen this option is specified, and `mode` is one of `snapshot` or `snapshot_and_follow`,\nthe snapshot of the table will be sorted by the corresponding column.",
+            "description": "Table column that serves as an event timestamp.\n\n\nWhen this option is specified, and `mode` is one of `snapshot` or `snapshot_and_follow`,\nthe snapshot of the table is ingested in the timestamp order.  This setting is required\nfor tables declared with the\n[`LATENESS`](https://www.feldera.com/docs/sql/streaming#lateness-expressions) attribute\nin Feldera SQL. It impacts the performance of the connector, since data must be sorted\nbefore pushing it to the pipeline; therefore it is not recommended to use this\nsettings for tables without `LATENESS`.",
             "nullable": true
           },
           "uri": {
             "type": "string",
-            "description": "Table URI."
+            "description": "Table URI.\n\nExample: \"s3://feldera-fraud-detection-data/demographics_train\""
           },
           "version": {
             "type": "integer",
@@ -3576,6 +3588,15 @@
           "description": "Storage options for configuring backend object store.\n\nFor specific options available for different storage backends, see:\n* [Azure options](https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html)\n* [Amazon S3 options](https://docs.rs/object_store/latest/object_store/aws/enum.AmazonS3ConfigKey.html)\n* [Google Cloud Storage options](https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html)"
         }
       },
+      "DeltaTableWriteMode": {
+        "type": "string",
+        "description": "Delta table write mode.\n\nDetermines how the Delta table connector handles an existing table at the target location.",
+        "enum": [
+          "append",
+          "truncate",
+          "error_if_exists"
+        ]
+      },
       "DeltaTableWriterConfig": {
         "type": "object",
         "description": "Delta table output connector configuration.",
@@ -3583,6 +3604,9 @@
           "uri"
         ],
         "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/DeltaTableWriteMode"
+          },
           "uri": {
             "type": "string",
             "description": "Table URI."
@@ -4354,6 +4378,12 @@
                 "description": "Minimal input batch size.\n\nThe controller delays pushing input records to the circuit until at\nleast `min_batch_size_records` records have been received (total\nacross all endpoints) or `max_buffering_delay_usecs` microseconds\nhave passed since at least one input records has been buffered.\nDefaults to 0.",
                 "minimum": 0
               },
+              "min_storage_rows": {
+                "type": "integer",
+                "description": "The minimum estimated number of rows in a batch to write it to storage.\nThis is provided for debugging and fine-tuning and should ordinarily be\nleft unset. It only has an effect when `storage` is set to true.\n\nA value of 0 will write even empty batches to storage, and nonzero\nvalues provide a threshold.  `usize::MAX` would effectively disable\nstorage.",
+                "nullable": true,
+                "minimum": 0
+              },
               "resources": {
                 "$ref": "#/components/schemas/ResourceConfig"
               },
@@ -4363,7 +4393,7 @@
               },
               "tcp_metrics_exporter": {
                 "type": "boolean",
-                "description": "Enable the TCP metrics exporter.\n\nThis is used for development purposes only.\nIf enabled, the `metrics-observer` CLI tool\ncan be used to inspect metrics from the pipeline."
+                "description": "Enable the TCP metrics exporter.\n\nThis is used for development purposes only.\nIf enabled, the `metrics-observer` CLI tool\ncan be used to inspect metrics from the pipeline.\n\nBecause of how Rust metrics work, this is only honored for the first\npipeline to be instantiated within a given process."
               },
               "workers": {
                 "type": "integer",
@@ -4559,12 +4589,14 @@
       "ProgramConfig": {
         "type": "object",
         "description": "Program configuration.",
-        "required": [
-          "profile"
-        ],
         "properties": {
           "profile": {
-            "$ref": "#/components/schemas/CompilationProfile"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CompilationProfile"
+              }
+            ],
+            "nullable": true
           }
         }
       },
@@ -4847,6 +4879,11 @@
             "nullable": true,
             "minimum": 0
           },
+          "storage_class": {
+            "type": "string",
+            "description": "Storage class to use for an instance of this pipeline.\nThe class determines storage performance such as IOPS and throughput.",
+            "nullable": true
+          },
           "storage_mb_max": {
             "type": "integer",
             "format": "int64",
@@ -4881,6 +4918,12 @@
             "description": "Minimal input batch size.\n\nThe controller delays pushing input records to the circuit until at\nleast `min_batch_size_records` records have been received (total\nacross all endpoints) or `max_buffering_delay_usecs` microseconds\nhave passed since at least one input records has been buffered.\nDefaults to 0.",
             "minimum": 0
           },
+          "min_storage_rows": {
+            "type": "integer",
+            "description": "The minimum estimated number of rows in a batch to write it to storage.\nThis is provided for debugging and fine-tuning and should ordinarily be\nleft unset. It only has an effect when `storage` is set to true.\n\nA value of 0 will write even empty batches to storage, and nonzero\nvalues provide a threshold.  `usize::MAX` would effectively disable\nstorage.",
+            "nullable": true,
+            "minimum": 0
+          },
           "resources": {
             "$ref": "#/components/schemas/ResourceConfig"
           },
@@ -4890,7 +4933,7 @@
           },
           "tcp_metrics_exporter": {
             "type": "boolean",
-            "description": "Enable the TCP metrics exporter.\n\nThis is used for development purposes only.\nIf enabled, the `metrics-observer` CLI tool\ncan be used to inspect metrics from the pipeline."
+            "description": "Enable the TCP metrics exporter.\n\nThis is used for development purposes only.\nIf enabled, the `metrics-observer` CLI tool\ncan be used to inspect metrics from the pipeline.\n\nBecause of how Rust metrics work, this is only honored for the first\npipeline to be instantiated within a given process."
           },
           "workers": {
             "type": "integer",

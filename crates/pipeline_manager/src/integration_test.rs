@@ -43,6 +43,7 @@ use std::{
 };
 
 use actix_http::{encoding::Decoder, Payload, StatusCode};
+use awc::error::SendRequestError;
 use awc::{http, ClientRequest, ClientResponse};
 use aws_sdk_cognitoidentityprovider::config::Region;
 use colored::Colorize;
@@ -68,6 +69,7 @@ use tokio::sync::Mutex;
 
 const TEST_DBSP_URL_VAR: &str = "TEST_DBSP_URL";
 const TEST_DBSP_DEFAULT_PORT: u16 = 8089;
+const MANAGER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(100);
 
 // Used if we are testing against a local DBSP instance
 // whose lifecycle is managed by this test file
@@ -115,7 +117,7 @@ async fn initialize_local_pipeline_manager_instance() -> TempDir {
         compiler_working_directory: workdir.to_owned(),
         sql_compiler_home: "../../sql-to-dbsp-compiler".to_owned(),
         dbsp_override_path: "../../".to_owned(),
-        compilation_profile: Some(crate::config::CompilationProfile::Unoptimized),
+        compilation_profile: crate::config::CompilationProfile::Unoptimized,
         precompile: true,
         binary_ref_host: "127.0.0.1".to_string(),
         binary_ref_port: 9090,
@@ -193,11 +195,29 @@ impl TestConfig {
         let config = self;
 
         // Cleanup pipelines..
-        let mut req = config.get("/v0/pipelines").await;
+        let start = Instant::now();
+        let mut req;
+
+        loop {
+            match config.try_get("/v0/pipelines").await {
+                Ok(r) => {
+                    req = r;
+                    break;
+                }
+                Err(e) => {
+                    if start.elapsed() > MANAGER_INITIALIZATION_TIMEOUT {
+                        panic!("Timeout waiting for the pipeline manager");
+                    }
+                    println!("Couldn't reach pipeline manager, retrying: {e}");
+                    sleep(Duration::from_millis(1000)).await;
+                }
+            }
+        }
         let pipelines: Value = req.json().await.unwrap();
         // First, shutdown the pipelines
         for pipeline in pipelines.as_array().unwrap() {
             let name = pipeline["descriptor"]["name"].as_str().unwrap();
+            println!("shutting down pipeline {name}");
             let req = config
                 .post_no_body(format!("/v0/pipelines/{name}/shutdown"))
                 .await;
@@ -246,10 +266,16 @@ impl TestConfig {
     }
 
     async fn get<S: AsRef<str>>(&self, endpoint: S) -> ClientResponse<Decoder<Payload>> {
+        self.try_get(endpoint).await.unwrap()
+    }
+
+    async fn try_get<S: AsRef<str>>(
+        &self,
+        endpoint: S,
+    ) -> Result<ClientResponse<Decoder<Payload>>, SendRequestError> {
         self.maybe_attach_bearer_token(self.client.get(self.endpoint_url(endpoint)))
             .send()
             .await
-            .unwrap()
     }
 
     /// Performs GET request, asserts the status code is OK, and returns result.
@@ -1621,7 +1647,8 @@ async fn pipeline_runtime_configuration() {
             "workers": 100,
             "resources": {
                 "cpu_cores_min": 5,
-                "storage_mb_max": 2000
+                "storage_mb_max": 2000,
+                "storage_class": "normal"
             }
         },
         "connectors": null
@@ -1642,7 +1669,7 @@ async fn pipeline_runtime_configuration() {
     let resources = &resp["resources"];
     assert_eq!(100, workers);
     assert_eq!(
-        json!({ "cpu_cores_min": 5, "cpu_cores_max": null, "memory_mb_min": null, "memory_mb_max": null, "storage_mb_max": 2000 }),
+        json!({ "cpu_cores_min": 5, "cpu_cores_max": null, "memory_mb_min": null, "memory_mb_max": null, "storage_mb_max": 2000, "storage_class": "normal" }),
         *resources
     );
 
@@ -1677,7 +1704,7 @@ async fn pipeline_runtime_configuration() {
     let resources = &resp["resources"];
     assert_eq!(5, workers);
     assert_eq!(
-        json!({ "cpu_cores_min": null, "cpu_cores_max": null, "memory_mb_min": null, "memory_mb_max": 100, "storage_mb_max": null }),
+        json!({ "cpu_cores_min": null, "cpu_cores_max": null, "memory_mb_min": null, "memory_mb_max": 100, "storage_mb_max": null, "storage_class": null }),
         *resources
     );
 }

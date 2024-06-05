@@ -53,10 +53,16 @@ use crossbeam::{
 use dbsp::circuit::{CircuitConfig, Layout};
 use log::trace;
 use log::{debug, error, info};
+use metrics::set_global_recorder;
+use metrics_util::{
+    debugging::{DebuggingRecorder, Snapshotter},
+    layers::FanoutBuilder,
+};
 use pipeline_types::query::OutputQuery;
 use std::collections::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::OnceLock,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Condvar, Mutex,
@@ -378,7 +384,9 @@ impl Controller {
     /// Returns controller status.
     pub fn status(&self) -> &ControllerStatus {
         // Update pipeline metrics computed on-demand.
-        self.inner.status.update();
+        self.inner
+            .status
+            .update(self.inner.metrics_snapshotter.snapshot());
         &self.inner.status
     }
 
@@ -440,20 +448,16 @@ impl Controller {
     {
         let mut start: Option<Instant> = None;
         let min_storage_rows = if controller.status.pipeline_config.global.storage {
-            0
+            // This reduces the files stored on disk to a reasonable number.
+            controller
+                .status
+                .pipeline_config
+                .global
+                .min_storage_rows
+                .unwrap_or(1000)
         } else {
             usize::MAX
         };
-        if controller
-            .status
-            .pipeline_config
-            .global
-            .tcp_metrics_exporter
-        {
-            metrics_exporter_tcp::TcpBuilder::new()
-                .install()
-                .expect("failed to install TCP exporter");
-        }
         let config = CircuitConfig {
             layout: Layout::new_solo(controller.status.pipeline_config.global.workers as usize),
             storage: controller.status.pipeline_config.storage_config.clone(),
@@ -945,6 +949,7 @@ pub struct ControllerInner {
     backpressure_thread_unparker: Unparker,
     error_cb: Box<dyn Fn(ControllerError) + Send + Sync>,
     step: AtomicStep,
+    metrics_snapshotter: Arc<Snapshotter>,
 
     /// The lowest-numbered input step not known to have committed yet.
     ///
@@ -977,11 +982,38 @@ impl ControllerInner {
             backpressure_thread_unparker,
             error_cb,
             step: AtomicStep::new(0),
+            metrics_snapshotter: Self::install_metrics_recorder(config.global.tcp_metrics_exporter),
             uncommitted_step: Mutex::new(0),
             step_committed: Condvar::new(),
         }
     }
 
+    /// Sets the global metrics recorder and returns a `Snapshotter`.  If
+    /// `support_tcp_metrics` is true, enables export of metrics via TCP.
+    fn install_metrics_recorder(support_tcp_metrics: bool) -> Arc<Snapshotter> {
+        static SNAPSHOTTER: OnceLock<Arc<Snapshotter>> = OnceLock::new();
+        SNAPSHOTTER
+            .get_or_init(|| {
+                let mut builder = FanoutBuilder::default();
+
+                if support_tcp_metrics {
+                    builder = builder.add_recorder(
+                        metrics_exporter_tcp::TcpBuilder::new()
+                            .build()
+                            .expect("failed to build TCP metrics exporter"),
+                    );
+                }
+
+                let debugging_recorder = DebuggingRecorder::new();
+                let snapshotter = debugging_recorder.snapshotter();
+                let builder = builder.add_recorder(debugging_recorder);
+
+                set_global_recorder(builder.build()).expect("failed to install metrics exporter");
+
+                Arc::new(snapshotter)
+            })
+            .clone()
+    }
     fn connect_input(
         self: &Arc<Self>,
         endpoint_name: &str,
@@ -1202,6 +1234,12 @@ impl ControllerInner {
         let self_weak = Arc::downgrade(self);
 
         let is_fault_tolerant;
+
+        endpoint_config
+            .connector_config
+            .output_buffer_config
+            .validate()
+            .map_err(|e| ControllerError::invalid_output_buffer_configuration(endpoint_name, &e))?;
 
         let encoder = if let Some(mut endpoint) = endpoint {
             endpoint

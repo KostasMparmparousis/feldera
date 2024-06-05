@@ -9,9 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documentation: added the
+  [fraud detection use case](https://feldera.com/docs/use_cases/fraud_detection)
+  to the docs section of the website.
+- API: storage class can be configured via pipeline resources
+  ([#1829](https://github.com/feldera/feldera/pull/1829))
+- [Python] Added support for Kafka connector via Python SDK
+  ([#1807](https://github.com/feldera/feldera/pull/1807))
+- [Python] Added support for HTTP GET connector via Python SDK
+- [Python] Add support for Avro format
+  ([#1836](https://github.com/feldera/feldera/pull/1836))
+
+### Fixed
+
+- WebConsole: Fix crash when displaying anonymous output columns (#1757)
+
+## [0.17.0] - 2024-05-28
+
+### Added
+
+- Added backpressure mode to the `/egress` endpoint, which applies
+  backpressure on the pipeline if the HTTP client cannot keep up
+  with the output instead of dropping data.
+  ([#1780](https://github.com/feldera/feldera/pull/1780))
 - `/heap_profile` endpoint that generates the heap profile
   of a pipeline in the pprof format.
   ([#1767](https://github.com/feldera/feldera/pull/1767))
+- Python SDK for Feldera
+  ([#1745](https://github.com/feldera/feldera/pull/1745))
+
 
 ## [0.16.0] - 2024-05-15
 
@@ -39,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#1734](https://github.com/feldera/feldera/pull/1734))
 - [Docs] Expand connectors documentation
   ([#1746](https://github.com/feldera/feldera/pull/1746))
+- [pipeline-manager] Program compilation profile is optional and is no
+  longer treated as a hint. Compiler compilation profile is now a default.
+  ([#1777](https://github.com/feldera/feldera/pull/1777))
 
 ## [0.15.0] - 2024-04-30
 

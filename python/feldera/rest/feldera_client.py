@@ -11,7 +11,11 @@ from feldera.rest.pipeline import Pipeline
 from feldera.rest._httprequests import HttpRequests
 
 
-class Client:
+def _prepare_boolean_input(value: bool) -> str:
+    return "true" if value else "false"
+
+
+class FelderaClient:
     """
     A client for the Feldera HTTP API
 
@@ -54,6 +58,7 @@ class Client:
     def get_program(self, name: str, with_code: bool = False) -> Program:
         """
         Get a program by name
+
         :param name: The name of the program
         :param with_code: If True, the program code will be included in the response
         """
@@ -75,11 +80,13 @@ class Client:
     def compile_program(self, program: Program):
         """
         Compiles a SQL program
+
         :param program: The program to compile
         """
         body = {
             "code": program.code,
             "description": program.description or "",
+            "config": { "profile": "optimized" }
         }
 
         resp = self.http.put(
@@ -104,6 +111,7 @@ class Client:
     def delete_program(self, name: str):
         """
         Deletes a program by name
+
         :param name: The name of the program
         """
 
@@ -132,6 +140,7 @@ class Client:
     def get_connector(self, name: str) -> Connector:
         """
         Get a connector by name
+
         :param name: The name of the connector
         """
 
@@ -168,6 +177,7 @@ class Client:
     def delete_connector(self, name: str):
         """
         Delete a connector by name
+
         :param name: The name of the connector
         """
         self.http.delete(
@@ -211,6 +221,8 @@ class Client:
     def get_pipeline(self, name: str) -> Pipeline:
         """
         Get a pipeline by name
+
+        :param name: The name of the pipeline
         """
 
         resp = self.http.get(
@@ -222,6 +234,8 @@ class Client:
     def create_pipeline(self, pipeline: Pipeline):
         """
         Create a pipeline
+
+        :param pipeline: The pipeline to create
         """
 
         body = {
@@ -255,6 +269,8 @@ class Client:
         Checks whether the pipeline is configured correctly.
         This includes checking whether the pipeline references a valid compiled program,
         whether the connectors reference valid tables/views in the program, and more.
+
+        :param name: The name of the pipeline
         """
 
         resp = self.http.get(
@@ -268,6 +284,7 @@ class Client:
     def delete_pipeline(self, name: str):
         """
         Deletes a pipeline by name
+
         :param name: The name of the pipeline
         """
         resp = self.http.delete(
@@ -277,6 +294,8 @@ class Client:
     def get_pipeline_stats(self, name: str) -> dict:
         """
         Get the pipeline metrics and performance counters
+
+        :param name: The name of the pipeline
         """
 
         resp = self.http.get(
@@ -288,6 +307,7 @@ class Client:
     def start_pipeline(self, pipeline_name: str):
         """
         Start a pipeline
+
         :param pipeline_name: The name of the pipeline to start
         """
         self.http.post(
@@ -309,6 +329,7 @@ class Client:
     def pause_pipeline(self, pipeline_name: str):
         """
         Stop a pipeline
+
         :param pipeline_name: The name of the pipeline to stop
         """
         self.http.post(
@@ -330,8 +351,10 @@ class Client:
     def shutdown_pipeline(self, pipeline_name: str):
         """
         Shutdown a pipeline
+
         :param pipeline_name: The name of the pipeline to shutdown
         """
+
         self.http.post(
             path=f"/pipelines/{pipeline_name}/shutdown",
         )
@@ -360,14 +383,17 @@ class Client:
     ):
         """
         Insert data into a pipeline
+
         :param pipeline_name: The name of the pipeline
         :param table_name: The name of the table
         :param format: The format of the data, either "json" or "csv"
         :param array: True if updates in this stream are packed into JSON arrays, used in conjunction with the
             "json" format
+
         :param force: If True, the data will be inserted even if the pipeline is paused
         :param update_format: JSON data change event format, used in conjunction with the "json" format,
-        the default value is "insert_delete", other supported formats: "weighted", "debezium", "snowflake", "raw"
+            the default value is "insert_delete", other supported formats: "weighted", "debezium", "snowflake", "raw"
+
         :param data: The data to insert
         """
 
@@ -378,8 +404,8 @@ class Client:
             raise ValueError("update_format must be one of 'insert_delete', 'weighted', 'debezium', 'snowflake', 'raw'")
 
         # python sends `True` which isn't accepted by the backend
-        array = "true" if array else "false"
-        force = "true" if force else "false"
+        array = _prepare_boolean_input(array)
+        force = _prepare_boolean_input(force)
 
         params = {
             "force": force,
@@ -409,6 +435,7 @@ class Client:
             table_name: str,
             format: str,
             mode: str = "watch",
+            backpressure: bool = True,
             query: Optional[str] = None,
             quantiles: Optional[int] = None,
             array: bool = False,
@@ -416,14 +443,20 @@ class Client:
     ):
         """
         Listen for updates to views for pipeline, yields the chunks of data
+
         :param pipeline_name: The name of the pipeline
         :param table_name: The name of the table to listen to
         :param format: The format of the data, either "json" or "csv"
         :param mode: The mode to listen in, either "watch" or "snapshot"
+        :param backpressure: When the flag is True (the default), this method waits for the consumer to receive each
+            chunk and blocks the pipeline if the consumer cannot keep up. When this flag is False, the pipeline drops
+            data chunks if the consumer is not keeping up with its output. This prevents a slow consumer from slowing
+            down the entire pipeline.
         :param quantiles: For 'quantiles' queries: the number of quantiles to output. The default value is 100
         :param query: Query to execute on the table, either "table", "neighborhood" or "quantiles"
         :param array: Set True to group updates in this stream into JSON arrays, used in conjunction with the
             "json" format, the default value is False
+
         :param timeout: The amount of time in seconds to listen to the stream for
         """
 
@@ -436,13 +469,14 @@ class Client:
         params = {
             "mode": mode,
             "format": format,
+            "backpressure": _prepare_boolean_input(backpressure),
         }
 
         if quantiles:
             params["quantiles"] = quantiles
 
         if format == "json":
-            params["array"] = "true" if array else "false"
+            params["array"] = _prepare_boolean_input(array)
 
         resp = self.http.post(
             path=f"/pipelines/{pipeline_name}/egress/{table_name}",
@@ -452,17 +486,10 @@ class Client:
 
         end = time.time() + timeout if timeout else None
 
-        old_chunk = b""
-
-        for chunk in resp.iter_content(chunk_size=None):
+        # Using the default chunk size below makes `iter_lines` extremely
+        # inefficient when dealing with long lines.
+        for chunk in resp.iter_lines(chunk_size=50000000):
             if end and time.time() > end:
                 break
             if chunk:
-                try:
-                    chunk = old_chunk + chunk
-                    valid_json = json.loads(chunk)
-                    old_chunk = b""
-                    yield valid_json
-                except json.decoder.JSONDecodeError:
-                    old_chunk += chunk
-                    continue
+                yield json.loads(chunk)

@@ -9,8 +9,8 @@ import { SQLTypeHeader } from '$lib/components/streaming/inspection/SQLTypeHeade
 import { SQLValueDisplay } from '$lib/components/streaming/inspection/SQLValueDisplay'
 import { useDataGridPresentationLocalStorage } from '$lib/compositions/persistence/dataGrid'
 import { getDefaultValue } from '$lib/compositions/streaming/import/useDefaultRows'
-import { sqlValueComparator } from '$lib/functions/ddl'
 import { getCaseIndependentName } from '$lib/functions/felderaRelation'
+import { sqlValueComparator } from '$lib/functions/sqlValue'
 import { ColumnType, Field, PipelineRevision, Relation } from '$lib/services/manager'
 import { LS_PREFIX } from '$lib/types/localStorage'
 import { Dispatch, SetStateAction, useState } from 'react'
@@ -26,7 +26,7 @@ import {
 import ImportToolbar from './ImportToolbar'
 import { SQLValueInput } from './SQLValueInput'
 
-import type { Row } from '$lib/functions/ddl'
+import type { Row } from '$lib/functions/sqlValue'
 
 // augment the props for the toolbar slot
 declare module '@mui/x-data-grid-pro' {
@@ -86,6 +86,13 @@ export const InsertionTable = ({
           }
         }}
         getRowId={(row: Row) => row.genId}
+        onCellEditStart={(params, event) => {
+          if (params.reason === 'printableKeyDown') {
+            // Prevent editing the field value when pressing printable key after single-clicking on a cell
+            // https://mui.com/x/react-data-grid/events/#disabling-the-default-behavior
+            event.defaultMuiPrevented = true
+          }
+        }}
         columns={[
           ...relation.fields.map((col: Field): GridColDef<Row> => {
             return {

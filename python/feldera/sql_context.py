@@ -2,10 +2,12 @@ import time
 import pandas
 import re
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Callable
+
 from typing_extensions import Self
 from queue import Queue
 
+from feldera.rest.errors import FelderaAPIError
 from feldera import FelderaClient
 from feldera.rest.program import Program
 from feldera.rest.pipeline import Pipeline
@@ -13,7 +15,10 @@ from feldera.rest.connector import Connector
 from feldera._sql_table import SQLTable
 from feldera.sql_schema import SQLSchema
 from feldera.output_handler import OutputHandler
-from feldera.output_handler import _OutputHandlerInstruction
+from feldera._callback_runner import CallbackRunner, _CallbackRunnerInstruction
+from feldera._helpers import ensure_dataframe_has_columns
+from feldera.formats import JSONFormat, CSVFormat, AvroFormat
+from feldera._helpers import validate_connector_input_format
 from enum import Enum
 
 
@@ -23,18 +28,14 @@ class BuildMode(Enum):
     GET_OR_CREATE = 3
 
 
-class PipelineState(Enum):
-    RUNNING = 1
-    PAUSED = 2
-    SHUTDOWN = 3
-
-
 def _table_name_from_sql(ddl: str) -> str:
     return re.findall(r"[\w']+", ddl)[2]
 
 
 class SQLContext:
     """
+    .. _SQLContext:
+
     The SQLContext is the main entry point for the Feldera SQL API.
     Abstracts the interaction with the Feldera API and provides a high-level interface for SQL pipelines.
     """
@@ -46,9 +47,11 @@ class SQLContext:
             pipeline_description: str = None,
             program_name: str = None,
             program_description: str = None,
+            storage: bool = False,
+            workers: int = 8
     ):
         self.build_mode: Optional[BuildMode] = None
-        self.state: PipelineState = PipelineState.SHUTDOWN
+        self.is_pipeline_running: bool = False
 
         self.ddl: str = ""
 
@@ -80,6 +83,8 @@ class SQLContext:
 
         self.program_name: str = program_name or pipeline_name
         self.program_description: str = program_description or ""
+        self.storage: bool = storage
+        self.workers: int = workers
 
     def __build_ddl(self):
         """
@@ -90,9 +95,11 @@ class SQLContext:
 
         self.ddl = tables + "\n" + views
 
-    def __setup(self):
+    def __setup_pipeline(self):
         """
         Internal function used to setup the pipeline and program on the Feldera API.
+
+        :meta private:
         """
 
         self.__build_ddl()
@@ -117,14 +124,43 @@ class SQLContext:
                 attached_con = con.attach_relation(view_name, False)
                 attached_cons.append(attached_con)
 
+        config = { 'storage': self.storage, 'workers': self.workers }
         pipeline = Pipeline(
             self.pipeline_name,
             self.program_name,
             self.pipeline_description,
+            config=config,
             attached_connectors=attached_cons
         )
 
         self.client.create_pipeline(pipeline)
+
+    def __setup_output_listeners(self):
+        """
+        Internal function used to setup the output listeners.
+
+        :meta private:
+        """
+
+        for view_queue in self.views_tx:
+            for view_name, queue in view_queue.items():
+                # sends a message to the callback runner to start listening
+                queue.put(_CallbackRunnerInstruction.PipelineStarted)
+                # block until the callback runner is ready
+                queue.join()
+
+    def __push_http_inputs(self):
+        """
+        Internal function used to push the input data to the pipeline.
+
+        :meta private:
+        """
+
+        for input_buffer in self.http_input_buffer:
+            for tbl_name, data in input_buffer.items():
+                self.client.push_to_pipeline(self.pipeline_name, tbl_name, "json", data, array=True)
+
+        self.http_input_buffer.clear()
 
     def create(self) -> Self:
         """
@@ -150,6 +186,21 @@ class SQLContext:
 
         self.build_mode = BuildMode.GET_OR_CREATE
         return self
+
+    def pipeline_state(self) -> str:
+        """
+        Returns the state of the pipeline.
+        """
+
+        try:
+            pipeline = self.client.get_pipeline(self.pipeline_name)
+            return pipeline.current_state()
+
+        except FelderaAPIError as err:
+            if err.status_code == 404:
+                return "Uninitialized"
+            else:
+                raise err
 
     def register_table(self, table_name: str, schema: Optional[SQLSchema] = None, ddl: str = None):
         """
@@ -201,6 +252,8 @@ class SQLContext:
         :param df: The pandas DataFrame to be pushed to the pipeline.
         """
 
+        ensure_dataframe_has_columns(df)
+
         tbl = self.tables.get(table_name)
 
         if tbl:
@@ -239,6 +292,9 @@ class SQLContext:
         Listens to the output of the provided view so that it is available in the notebook / python code.
 
         :param view_name: The name of the view to listen to.
+
+        .. note::
+            - This method must be called before calling :meth:`.run_to_completion`, or :meth:`.start`.
         """
 
         queue = Queue(maxsize=1)
@@ -308,17 +364,165 @@ class SQLContext:
         else:
             self.output_connectors_buffer[view_name] = [connector]
 
+    def foreach_chunk(self, view_name: str, callback: Callable[[pandas.DataFrame, int], None]):
+        """
+        Runs the given callback on each chunk of the output of the specified view.
+
+        :param view_name: The name of the view.
+        :param callback: The callback to run on each chunk. The callback should take two arguments:
+
+                - **chunk**  -> The chunk as a pandas DataFrame
+                - **seq_no** -> The sequence number. The sequence number is a monotonically increasing integer that
+                  starts from 0. Note that the sequence number is unique for each chunk, but not necessarily contiguous.
+
+        Please note that the callback is run in a separate thread, so it should be thread-safe.
+        Please note that the callback should not block for a long time, as by default, backpressure is enabled and
+        will block the pipeline.
+
+        .. note::
+            - The callback must be thread-safe as it will be run in a separate thread.
+            - This method must be called before calling :meth:`.run_to_completion`, or :meth:`.start`.
+
+        """
+
+        queue: Optional[Queue] = None
+
+        if not self.is_pipeline_running:
+            queue = Queue(maxsize=1)
+            self.views_tx.append({view_name: queue})
+
+        handler = CallbackRunner(self.client, self.pipeline_name, view_name, callback, queue)
+        handler.start()
+
+    def connect_source_kafka(
+        self,
+        table_name: str,
+        connector_name: str,
+        config: dict,
+        fmt: JSONFormat | CSVFormat
+    ):
+        """
+        Associates the specified kafka topics on the specified Kafka server as input source for the specified table in
+        Feldera. The table is populated with changes from the specified kafka topics.
+
+        :param table_name: The name of the table.
+        :param connector_name: The unique name for this connector.
+        :param config: The configuration for the kafka connector.
+        :param fmt: The format of the data in the kafka topic.
+        """
+
+        if config.get("bootstrap.servers") is None:
+            raise ValueError("'bootstrap.servers' is required in the config")
+
+        if config.get("topics") is None:
+            raise ValueError("topics is required in the config")
+
+        validate_connector_input_format(fmt)
+
+        connector = Connector(
+            name=connector_name,
+            config={
+                "transport": {
+                    "name": "kafka_input",
+                    "config": config,
+                },
+                "format": fmt.to_dict(),
+            }
+        )
+
+        if table_name in self.input_connectors_buffer:
+            self.input_connectors_buffer[table_name].append(connector)
+        else:
+            self.input_connectors_buffer[table_name] = [connector]
+
+    def connect_sink_kafka(
+        self,
+        view_name: str,
+        connector_name: str,
+        config: dict,
+        fmt: JSONFormat | CSVFormat | AvroFormat
+    ):
+        """
+        Associates the specified kafka topic on the specified Kafka server as output sink for the specified view in
+        Feldera. The topic is populated with changes in the specified view.
+
+        :param view_name: The name of the view whose changes are sent to kafka topic.
+        :param connector_name: The unique name for this connector.
+        :param config: The configuration for the kafka connector.
+        :param fmt: The format of the data in the kafka topic.
+        """
+
+        if config.get("bootstrap.servers") is None:
+            raise ValueError("'bootstrap.servers' is required in the config")
+
+        if config.get("topic") is None:
+            raise ValueError("topic is required in the config")
+
+        validate_connector_input_format(fmt)
+
+        connector = Connector(
+            name=connector_name,
+            config={
+                "transport": {
+                    "name": "kafka_output",
+                    "config": config,
+                },
+                "format": fmt.to_dict(),
+            }
+        )
+
+        if view_name in self.output_connectors_buffer:
+            self.output_connectors_buffer[view_name].append(connector)
+        else:
+            self.output_connectors_buffer[view_name] = [connector]
+
+    def connect_source_url(
+        self,
+        table_name: str,
+        connector_name: str,
+        path: str,
+        fmt: JSONFormat | CSVFormat
+    ):
+        """
+        Associates the specified URL as input source for the specified table in Feldera.
+        Feldera will make a GET request to the specified URL to read the data and populate the table.
+
+        :param table_name: The name of the table.
+        :param connector_name: The unique name for this connector.
+        :param path: The URL to read the data from.
+        :param fmt: The format of the data in the URL.
+        """
+
+        validate_connector_input_format(fmt)
+
+        connector = Connector(
+            name=connector_name,
+            config={
+                "transport": {
+                    "name": "url_input",
+                    "config": {
+                        "path": path
+                    }
+                },
+                "format": fmt.to_dict(),
+            }
+        )
+
+        if table_name in self.input_connectors_buffer:
+            self.input_connectors_buffer[table_name].append(connector)
+        else:
+            self.input_connectors_buffer[table_name] = [connector]
+
     def run_to_completion(self):
         """
+        .. _run_to_completion:
+
         Runs the pipeline to completion, waiting for all input records to be processed.
 
         :raises RuntimeError: If the pipeline returns unknown metrics.
         """
 
-        self.__setup()
-
-        if self.state != PipelineState.SHUTDOWN:
-            raise RuntimeError("pipeline is already running or paused, please shutdown the pipeline first")
+        self.__setup_pipeline()
 
         # start the pipeline in the paused state
         # so that we can start listening to the output
@@ -327,19 +531,12 @@ class SQLContext:
         self.pause()
 
         # set up the output listeners
-        for view_queue in self.views_tx:
-            for view_name, queue in view_queue.items():
-                queue.put(_OutputHandlerInstruction.PipelineStarted)
-                queue.join()
+        self.__setup_output_listeners()
 
         # resume the pipeline operations
         self.resume()
 
-        for input_buffer in self.http_input_buffer:
-            for tbl_name, data in input_buffer.items():
-                self.client.push_to_pipeline(self.pipeline_name, tbl_name, "json", data, array=True)
-
-        self.http_input_buffer.clear()
+        self.__push_http_inputs()
 
         while True:
             metrics: dict = self.client.get_pipeline_stats(self.pipeline_name).get("global_metrics")
@@ -355,57 +552,52 @@ class SQLContext:
 
         for view_queue in self.views_tx:
             for view_name, queue in view_queue.items():
-                queue.put(_OutputHandlerInstruction.RanToCompletion)
+                # sends a message to the callback runner to stop listening
+                queue.put(_CallbackRunnerInstruction.RanToCompletion)
+                # block until the callback runner has been stopped
                 queue.join()
 
         self.shutdown()
 
     def start(self):
         """
+        .. _start:
+
         Starts the pipeline.
 
         :raises RuntimeError: If the pipeline returns unknown metrics.
         """
 
-        self.__setup()
+        self.__setup_pipeline()
 
-        if self.state != PipelineState.SHUTDOWN:
-            raise RuntimeError("pipeline is already running or paused, please shutdown the pipeline first")
+        self.pause()
 
-        self.client.start_pipeline(self.pipeline_name)
-        self.state = PipelineState.RUNNING
+        self.__setup_output_listeners()
+
+        self.resume()
+
+        self.__push_http_inputs()
 
     def pause(self):
         """
         Pauses the pipeline.
         """
 
-        if self.state == PipelineState.PAUSED:
-            return
-
         self.client.pause_pipeline(self.pipeline_name)
-        self.state = PipelineState.PAUSED
+        self.is_pipeline_running = False
 
     def shutdown(self):
         """
-        Pauses and shuts down the pipeline.
+        Shuts down the pipeline.
         """
 
-        if self.state == PipelineState.SHUTDOWN:
-            return
-
-        self.pause()
-
         self.client.shutdown_pipeline(self.pipeline_name)
-        self.state = PipelineState.SHUTDOWN
+        self.is_pipeline_running = False
 
     def resume(self):
         """
         Resumes the pipeline.
         """
 
-        if self.state != PipelineState.PAUSED:
-            raise RuntimeError("pipeline is not paused, cannot resume it")
-
         self.client.start_pipeline(self.pipeline_name)
-        self.state = PipelineState.RUNNING
+        self.is_pipeline_running = True
