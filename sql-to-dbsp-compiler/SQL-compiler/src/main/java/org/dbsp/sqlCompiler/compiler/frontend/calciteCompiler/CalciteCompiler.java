@@ -64,6 +64,7 @@ import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlBasicTypeNameSpec;
 import org.apache.calcite.sql.SqlBinaryOperator;
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlExplainFormat;
 import org.apache.calcite.sql.SqlExplainLevel;
@@ -791,6 +792,56 @@ public class CalciteCompiler implements IWritesLogs {
         }
     }
 
+    public String extractOperands(SqlNode node, SqlNodeList parameters) {
+        StringBuilder expression = new StringBuilder();
+
+        if (node instanceof SqlBasicCall) {
+            SqlBasicCall call = (SqlBasicCall) node;
+            SqlOperator operator = call.getOperator();
+            List<SqlNode> operands = call.getOperandList();
+
+            // Handle each operand recursively
+            for (int i = 0; i < operands.size(); i++) {
+                if (i > 0) {
+                    // Add operator between operands
+                    expression.append(" ").append(operator).append(" ");
+                }
+
+                // Add parentheses for nested operations
+                boolean isNested = operands.get(i) instanceof SqlBasicCall;
+                if (isNested) {
+                    expression.append("(");
+                }
+
+                // Recursively process the operand
+                expression.append(extractOperands(operands.get(i), parameters));
+
+                if (isNested) {
+                    expression.append(")");
+                }
+            }
+        } else {
+            // Handle leaf nodes (non-operator nodes)
+            boolean appended = false;
+            Iterator<SqlNode> paramIterator = parameters.iterator();
+            while (paramIterator.hasNext()) {
+                SqlNode column = paramIterator.next();
+                String columnString = column.toString();
+                String columnName = columnString.split(" ")[0].replace("`", "");
+                if (columnName.equals(node.toString())) {
+                    expression.append("TMP." + node.toString());
+                    appended = true;
+                    break;
+                }
+            }
+            if (!appended) {
+                expression.append(node.toString());
+            }
+        }
+
+        return expression.toString();
+    }
+
     @Nullable
     Triple<RexNode, CreateViewStatement, CreateTableStatement> createFunction(SqlCreateFunctionDeclaration decl) {
         SqlNode body = decl.getBody();
@@ -837,18 +888,13 @@ public class CalciteCompiler implements IWritesLogs {
                         SqlNode whereNode = select.getWhere();
 
                         builder.append("CREATE VIEW TMP0 AS\nSELECT " + selectNode.toString() + " FROM "
-                                + fromNode.toString() + ", TMP\nWHERE");
+                                + fromNode.toString());
+                        if (whereNode != null && whereNode instanceof SqlBasicCall) {
+                            builder.append(", TMP\nWHERE ");
 
-                        if (whereNode instanceof SqlBasicCall) {
-                            Iterator<SqlNode> paramIterator = decl.getParameters().iterator();
-                            while (paramIterator.hasNext()) {
-                                SqlNode column = paramIterator.next();
-                                String columnString = column.toString();
-                                String columnName = columnString.split(" ")[0].replace("`", "");
-                                String rebuiltWhere = whereNode.toString().replace(columnName, "TMP." + columnName)
-                                        .replace("`", "");
-                                builder.append(" " + rebuiltWhere);
-                            }
+                            String whereClause = extractOperands(whereNode, decl.getParameters());
+                            System.out.println("updated:" + whereClause);
+                            builder.append(whereClause.replace("`", ""));
                         }
                     }
                 } catch (SqlParseException e) {
@@ -856,7 +902,7 @@ public class CalciteCompiler implements IWritesLogs {
                 }
             }
             sql = builder.toString();
-            // System.out.println(sql);
+            System.out.println(sql);
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
             FrontEndStatement statement = null;
@@ -876,7 +922,7 @@ public class CalciteCompiler implements IWritesLogs {
             assert tempTable != null;
             RelNode node = tempView.getRelNode();
             ProjectExtractor extractor = new ProjectExtractor();
-            // System.out.println(RelOptUtil.toString(node));
+            System.out.println(RelOptUtil.toString(node));
             return Triple.of(extractor.body, tempView, tempTable);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
