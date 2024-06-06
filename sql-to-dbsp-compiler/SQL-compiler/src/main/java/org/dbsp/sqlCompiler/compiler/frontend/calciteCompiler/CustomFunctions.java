@@ -133,7 +133,7 @@ public class CustomFunctions {
      *                   the function is defined in Rust.
      */
     public ExternalFunction createUDF(CalciteObject node, SqlIdentifier name,
-                                      RelDataType signature, RelDataType returnType, @Nullable RexNode body) {
+                                      RelDataType signature, @Nullable RelDataType returnType, @Nullable RexNode body) {
         List<RelDataTypeField> parameterList = signature.getFieldList();
         String functionName = name.getSimple();
         boolean generated = functionName.toLowerCase(Locale.ENGLISH).startsWith("jsonstring_as_") || body != null;

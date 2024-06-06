@@ -49,6 +49,7 @@ import org.dbsp.sqlCompiler.compiler.frontend.CalciteToDBSPCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.TableContents;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CalciteCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CustomFunctions;
+import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateFunctionStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.FrontEndStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.IHasSchema;
@@ -229,8 +230,9 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             if (this.hasErrors())
                 return;
 
-            // Compile first the statements that define functions and types
+            // Compile first the statements that define functions and types, except for inline table queries
             List<SqlFunction> functions = new ArrayList<>();
+            List<SqlNode> inlineQueryNodes = new ArrayList<>();
             for (SqlNode node: parsed) {
                 Logger.INSTANCE.belowLevel(this, 2)
                         .append("Parsing result: ")
@@ -246,6 +248,12 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                     continue;
                 }
                 if (kind == SqlKind.CREATE_FUNCTION) {
+                    SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) node;
+                    SqlNode body = decl.getBody();
+                    if (body.isA(SqlKind.QUERY)) {
+                        inlineQueryNodes.add(node);
+                        continue;
+                    }
                     FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                     if (fe == null)
                         continue;
@@ -267,11 +275,41 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 }
             }
 
-            // Compile all statements which do not define functions or types
+            //compile all "CREATE RELATION" statements, except for the ones that use the inline table queries
+            List<SqlNode> statementsWithInlineQuery = new ArrayList<>();
             for (SqlNode node : parsed) {
                 SqlKind kind = node.getKind();
                 if (kind == SqlKind.CREATE_FUNCTION || kind == SqlKind.CREATE_TYPE)
                     continue;
+                boolean parsable = true;
+                for (SqlNode functNode : inlineQueryNodes) {
+                    SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) functNode;
+                    if (node.toString().contains(decl.getName().toString())) {
+                        statementsWithInlineQuery.add(node);
+                        parsable = false;
+                        break;
+                    }
+                }
+                if (parsable == false)
+                    continue;
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                if (fe == null)
+                    // error during compilation
+                    continue;
+                this.midend.compile(fe);
+            }
+
+            // Compile all the inline table queries
+            for (SqlNode node : inlineQueryNodes) {
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                if (fe == null)
+                    // error during compilation
+                    continue;
+                this.midend.compile(fe);
+            }
+
+            // Compile the remaining "CREATE RELATION" statements
+            for (SqlNode node : statementsWithInlineQuery) {
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                 if (fe == null)
                     // error during compilation

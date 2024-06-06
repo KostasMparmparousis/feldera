@@ -20,7 +20,7 @@ import java.util.Objects;
 public class SqlCreateFunctionDeclaration extends SqlCreate {
     private final SqlIdentifier name;
     private final SqlNodeList parameters;
-    private final SqlDataTypeSpec returnType;
+    @Nullable private final SqlDataTypeSpec returnType;
     @Nullable private final SqlNode body;
 
     private static final SqlSpecialOperator OPERATOR =
@@ -28,7 +28,7 @@ public class SqlCreateFunctionDeclaration extends SqlCreate {
 
     public SqlCreateFunctionDeclaration(SqlParserPos pos, boolean replace,
                                         boolean ifNotExists, SqlIdentifier name,
-                                        SqlNodeList parameters, SqlDataTypeSpec returnType,
+                                        SqlNodeList parameters, @Nullable SqlDataTypeSpec returnType,
                                         @Nullable SqlNode body) {
         super(OPERATOR, pos, replace, ifNotExists);
         this.name = Objects.requireNonNull(name, "name");
@@ -51,7 +51,10 @@ public class SqlCreateFunctionDeclaration extends SqlCreate {
             parameter.unparse(writer, 0, 0);
         }
         writer.endList(frame);
-        this.returnType.unparse(writer, 0, 0);
+        if (this.returnType != null) {
+            writer.keyword("RETURNS");
+            this.returnType.unparse(writer, 0, 0);
+        }
         if (this.body != null) {
             writer.keyword("AS");
             this.body.unparse(writer, 0, 0);
@@ -66,7 +69,7 @@ public class SqlCreateFunctionDeclaration extends SqlCreate {
         return this.parameters;
     }
 
-    public SqlDataTypeSpec getReturnType() {
+    @Nullable public SqlDataTypeSpec getReturnType() {
         return this.returnType;
     }
 

@@ -212,7 +212,7 @@ SqlCreateFunctionDeclaration SqlCreateFunction(Span s, boolean replace) :
     final boolean ifNotExists;
     final SqlIdentifier id;
     final SqlNodeList parameters;
-    final SqlDataTypeSpec type;
+    SqlDataTypeSpec type = null;
     final boolean nullable;
     SqlNode body = null;
 }
@@ -220,11 +220,14 @@ SqlCreateFunctionDeclaration SqlCreateFunction(Span s, boolean replace) :
     <FUNCTION> ifNotExists = IfNotExistsOpt()
     id = SimpleIdentifier()
     parameters = AttributeDefList()
-    <RETURNS>
-    type = DataType()
+    [ <RETURNS> type = DataType() ]
     nullable = NullableOptDefaultTrue()
-    [ <AS> body = OrderedQueryOrExpr(ExprContext.ACCEPT_NON_QUERY) ]
+    [ <AS> body = OrderedQueryOrExpr(ExprContext.ACCEPT_SUB_QUERY) ]
     {
+        if (type == null) {
+            return new SqlCreateFunctionDeclaration(s.end(this), replace, ifNotExists,
+                id, parameters, type, body);
+        }
         return new SqlCreateFunctionDeclaration(s.end(this), replace, ifNotExists,
             id, parameters, type.withNullable(nullable), body);
     }
