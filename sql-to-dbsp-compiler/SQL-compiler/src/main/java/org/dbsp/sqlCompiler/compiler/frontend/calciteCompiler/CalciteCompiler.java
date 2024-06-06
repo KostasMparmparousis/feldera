@@ -998,10 +998,13 @@ public class CalciteCompiler implements IWritesLogs {
                         });
                 RelDataType structType = this.typeFactory.createStructType(parameters);
                 SqlDataTypeSpec retType = decl.getReturnType();
-                RelDataType returnType = this.specToRel(retType);
-                Boolean nullableResult = retType.getNullable();
-                if (nullableResult != null)
-                    returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
+                RelDataType returnType = null;
+                if (retType != null) {
+                    returnType = this.specToRel(retType);
+                    Boolean nullableResult = retType.getNullable();
+                    if (nullableResult != null)
+                        returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
+                }
                 Triple<RexNode, CreateViewStatement, CreateTableStatement> udf = this.createFunction(decl);
                 RexNode bodyExp = udf.getLeft();
                 SqlNode body = decl.getBody();

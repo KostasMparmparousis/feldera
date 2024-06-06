@@ -44,7 +44,7 @@ public class CustomFunctions {
         this.udf = new HashMap<>(other.udf);
     }
 
-    /** RLIKE used as a function.  RLIKE in SQL uses infix notation */
+    /** RLIKE used as a function. RLIKE in SQL uses infix notation */
     static class RlikeFunction extends SqlFunction {
         public RlikeFunction() {
             super("RLIKE",
@@ -57,14 +57,15 @@ public class CustomFunctions {
 
         @Override
         public boolean isDeterministic() {
-            // TODO: change this when we learn how to constant-fold in the RexToLixTranslator
+            // TODO: change this when we learn how to constant-fold in the
+            // RexToLixTranslator
             return false;
         }
     }
 
     /**
      * GUNZIP(binary) returns the string that results from decompressing the
-     * input binary using the GZIP algorithm.  The input binary must be a
+     * input binary using the GZIP algorithm. The input binary must be a
      * valid GZIP binary string.
      */
     public static class GunzipFunction extends SqlFunction {
@@ -86,8 +87,9 @@ public class CustomFunctions {
 
     /**
      * WRITELOG(format, arg) returns its argument 'arg' unchanged but also logs
-     * its value to stdout.  Used for debugging.  In the format string
-     * each occurrence of %% is replaced with the arg */
+     * its value to stdout. Used for debugging. In the format string
+     * each occurrence of %% is replaced with the arg
+     */
     public static class WriteLogFunction extends SqlFunction {
         public WriteLogFunction() {
             super("WRITELOG",
@@ -104,8 +106,11 @@ public class CustomFunctions {
         }
     }
 
-    /** SEQUENCE(start, end) returns an array of integers from start to end (inclusive).
-     * The array is empty if start > end. */
+    /**
+     * SEQUENCE(start, end) returns an array of integers from start to end
+     * (inclusive).
+     * The array is empty if start > end.
+     */
     public static class SequenceFunction extends SqlFunction {
         public SequenceFunction() {
             super("SEQUENCE",
@@ -126,14 +131,15 @@ public class CustomFunctions {
 
     /**
      * Create a new user-defined function.
+     * 
      * @param name       Function name.
      * @param signature  Description of arguments as a struct.
      * @param returnType Return type of function.
-     * @param body       Optional body of the function.  If missing,
+     * @param body       Optional body of the function. If missing,
      *                   the function is defined in Rust.
      */
     public ExternalFunction createUDF(CalciteObject node, SqlIdentifier name,
-                                      RelDataType signature, RelDataType returnType, @Nullable RexNode body) {
+            RelDataType signature, @Nullable RelDataType returnType, @Nullable RexNode body) {
         List<RelDataTypeField> parameterList = signature.getFieldList();
         String functionName = name.getSimple();
         boolean generated = functionName.toLowerCase(Locale.ENGLISH).startsWith("jsonstring_as_") || body != null;

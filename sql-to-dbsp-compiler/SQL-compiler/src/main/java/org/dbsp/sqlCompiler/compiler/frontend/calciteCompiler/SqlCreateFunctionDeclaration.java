@@ -20,16 +20,18 @@ import java.util.Objects;
 public class SqlCreateFunctionDeclaration extends SqlCreate {
     private final SqlIdentifier name;
     private final SqlNodeList parameters;
+    @Nullable
     private final SqlDataTypeSpec returnType;
-    @Nullable private final SqlNode body;
+    @Nullable
+    private final SqlNode body;
 
-    private static final SqlSpecialOperator OPERATOR =
-            new SqlSpecialOperator("CREATE FUNCTION", SqlKind.CREATE_FUNCTION);
+    private static final SqlSpecialOperator OPERATOR = new SqlSpecialOperator("CREATE FUNCTION",
+            SqlKind.CREATE_FUNCTION);
 
     public SqlCreateFunctionDeclaration(SqlParserPos pos, boolean replace,
-                                        boolean ifNotExists, SqlIdentifier name,
-                                        SqlNodeList parameters, SqlDataTypeSpec returnType,
-                                        @Nullable SqlNode body) {
+            boolean ifNotExists, SqlIdentifier name,
+            SqlNodeList parameters, @Nullable SqlDataTypeSpec returnType,
+            @Nullable SqlNode body) {
         super(OPERATOR, pos, replace, ifNotExists);
         this.name = Objects.requireNonNull(name, "name");
         this.parameters = Objects.requireNonNull(parameters, "parameters");
@@ -37,8 +39,9 @@ public class SqlCreateFunctionDeclaration extends SqlCreate {
         this.body = body;
     }
 
-    @Override public void unparse(SqlWriter writer, int leftPrec,
-                                  int rightPrec) {
+    @Override
+    public void unparse(SqlWriter writer, int leftPrec,
+            int rightPrec) {
         writer.keyword(getReplace() ? "CREATE OR REPLACE" : "CREATE");
         writer.keyword("FUNCTION");
         if (this.ifNotExists) {
@@ -51,14 +54,18 @@ public class SqlCreateFunctionDeclaration extends SqlCreate {
             parameter.unparse(writer, 0, 0);
         }
         writer.endList(frame);
-        this.returnType.unparse(writer, 0, 0);
+        if (this.returnType != null) {
+            writer.keyword("RETURNS");
+            this.returnType.unparse(writer, 0, 0);
+        }
         if (this.body != null) {
             writer.keyword("AS");
             this.body.unparse(writer, 0, 0);
         }
     }
 
-    @Override public SqlOperator getOperator() {
+    @Override
+    public SqlOperator getOperator() {
         return OPERATOR;
     }
 
@@ -74,9 +81,13 @@ public class SqlCreateFunctionDeclaration extends SqlCreate {
         return this.name;
     }
 
-    @Override public List<SqlNode> getOperandList() {
+    @Override
+    public List<SqlNode> getOperandList() {
         return Arrays.asList(this.name, this.parameters);
     }
 
-    @Nullable public SqlNode getBody() { return this.body; }
+    @Nullable
+    public SqlNode getBody() {
+        return this.body;
+    }
 }
