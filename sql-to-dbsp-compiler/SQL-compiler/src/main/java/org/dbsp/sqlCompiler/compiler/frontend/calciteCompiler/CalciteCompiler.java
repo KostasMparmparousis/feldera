@@ -792,7 +792,7 @@ public class CalciteCompiler implements IWritesLogs {
         }
     }
 
-    public String extractOperands(SqlNode node, SqlNodeList parameters) {
+    public String extractOperands(SqlNode node, SqlNodeList parameters, String tableName) {
         StringBuilder expression = new StringBuilder();
 
         if (node instanceof SqlBasicCall) {
@@ -814,7 +814,7 @@ public class CalciteCompiler implements IWritesLogs {
                 }
 
                 // Recursively process the operand
-                expression.append(extractOperands(operands.get(i), parameters));
+                expression.append(extractOperands(operands.get(i), parameters, tableName));
 
                 if (isNested) {
                     expression.append(")");
@@ -829,7 +829,7 @@ public class CalciteCompiler implements IWritesLogs {
                 String columnString = column.toString();
                 String columnName = columnString.split(" ")[0].replace("`", "");
                 if (columnName.equals(node.toString())) {
-                    expression.append("TMP." + node.toString());
+                    expression.append(tableName + "." + node.toString());
                     appended = true;
                     break;
                 }
@@ -861,14 +861,15 @@ public class CalciteCompiler implements IWritesLogs {
             StringBuilder builder = new StringBuilder();
             SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
             String sql;
-            builder.append("CREATE TABLE TMP(");
+            String tableName = decl.getName().toString() + "_INPUT";
+            String viewName = decl.getName().toString() + "_OUTPUT";
+            builder.append("CREATE TABLE " + tableName + "(");
             decl.getParameters().unparse(writer, 0, 0);
             builder.append(");\n");
             if (!body.isA(SqlKind.QUERY)) {
                 builder.append("CREATE VIEW TMP0 AS SELECT ");
                 body.unparse(writer, 0, 0);
-                builder.append(" FROM TMP;");
-
+                builder.append(" FROM " + tableName + ";");
             } else {
                 SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
                 try {
@@ -887,13 +888,12 @@ public class CalciteCompiler implements IWritesLogs {
                         // Get the WHERE condition
                         SqlNode whereNode = select.getWhere();
 
-                        builder.append("CREATE VIEW TMP0 AS\nSELECT " + selectNode.toString() + " FROM "
+                        builder.append("CREATE VIEW " + viewName + " AS\nSELECT " + selectNode.toString() + " FROM "
                                 + fromNode.toString());
                         if (whereNode != null && whereNode instanceof SqlBasicCall) {
-                            builder.append(", TMP\nWHERE ");
+                            builder.append(", " + tableName + "\nWHERE ");
 
-                            String whereClause = extractOperands(whereNode, decl.getParameters());
-                            System.out.println("updated:" + whereClause);
+                            String whereClause = extractOperands(whereNode, decl.getParameters(), tableName);
                             builder.append(whereClause.replace("`", ""));
                         }
                     }
@@ -902,7 +902,7 @@ public class CalciteCompiler implements IWritesLogs {
                 }
             }
             sql = builder.toString();
-            System.out.println(sql);
+            // System.out.println(sql);
             CalciteCompiler clone = new CalciteCompiler(this);
             SqlNodeList list = clone.parseStatements(sql);
             FrontEndStatement statement = null;
@@ -922,7 +922,7 @@ public class CalciteCompiler implements IWritesLogs {
             assert tempTable != null;
             RelNode node = tempView.getRelNode();
             ProjectExtractor extractor = new ProjectExtractor();
-            System.out.println(RelOptUtil.toString(node));
+            // System.out.println(RelOptUtil.toString(node));
             return Triple.of(extractor.body, tempView, tempTable);
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
