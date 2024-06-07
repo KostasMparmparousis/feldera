@@ -752,7 +752,7 @@ public class CalciteCompiler implements IWritesLogs {
             return false;
         }
 
-        void visitScan(LogicalTableScan scan) {
+        void visitScan(TableScan scan) {
             // nothing
         }
 
@@ -1012,11 +1012,13 @@ public class CalciteCompiler implements IWritesLogs {
                     // System.out.println(body.toString());
                     CreateViewStatement view = udf.getMiddle();
                     CreateTableStatement table = udf.getRight();
-                    boolean success = this.calciteCatalog.addTable("TMP", table.getEmulatedTable(), this.errorReporter,
+                    boolean success = this.calciteCatalog.addTable(decl.getName().toString() + "_INPUT",
+                            table.getEmulatedTable(), this.errorReporter,
                             table);
                     if (!success)
                         return null;
-                    success = this.calciteCatalog.addTable("TMP0", view.getEmulatedTable(), this.errorReporter,
+                    success = this.calciteCatalog.addTable(decl.getName().toString() + "_OUTPUT",
+                            view.getEmulatedTable(), this.errorReporter,
                             view);
                     if (!success)
                         return null;
