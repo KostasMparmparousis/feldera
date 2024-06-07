@@ -301,7 +301,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
             // Compile all the inline table queries
             for (SqlNode node : inlineQueryNodes) {
-                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment, this.midend);
                 if (fe == null)
                     // error during compilation
                     continue;

@@ -105,6 +105,7 @@ import org.dbsp.sqlCompiler.compiler.errors.InternalCompilerError;
 import org.dbsp.sqlCompiler.compiler.errors.SourcePositionRange;
 import org.dbsp.sqlCompiler.compiler.errors.UnimplementedException;
 import org.dbsp.sqlCompiler.compiler.errors.UnsupportedException;
+import org.dbsp.sqlCompiler.compiler.frontend.CalciteToDBSPCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteObject.CalciteObject;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateFunctionStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateTableStatement;
@@ -793,15 +794,12 @@ public class CalciteCompiler implements IWritesLogs {
                     expression.append(" ").append(operator).append(" ");
                 }
 
-                // Add parentheses for nested operations
                 boolean isNested = operands.get(i) instanceof SqlBasicCall;
                 if (isNested) {
                     expression.append("(");
                 }
 
-                // Recursively process the operand
                 expression.append(extractOperands(operands.get(i), parameters, tableName));
-
                 if (isNested) {
                     expression.append(")");
                 }
@@ -893,6 +891,14 @@ public class CalciteCompiler implements IWritesLogs {
         }
     }
 
+    @Nullable
+    public FrontEndStatement compile(
+            String sqlStatement,
+            SqlNode node,
+            @Nullable String comment) {
+        return this.compile(sqlStatement, node, comment, null);
+    }
+
     /** Compile a SQL statement.
      * @param node         Compiled version of the SQL statement.
      * @param sqlStatement SQL statement as a string to compile.
@@ -901,7 +907,8 @@ public class CalciteCompiler implements IWritesLogs {
     public FrontEndStatement compile(
             String sqlStatement,
             SqlNode node,
-            @Nullable String comment) {
+            @Nullable String comment,
+            @Nullable CalciteToDBSPCompiler midendCompiler) {
         CalciteObject object = CalciteObject.create(node);
         Logger.INSTANCE.belowLevel(this, 3)
                 .append("Compiling ")
@@ -973,6 +980,8 @@ public class CalciteCompiler implements IWritesLogs {
                             tmpView);
                     if (!success)
                         return null;
+                    midendCompiler.compile(tmpTable);
+                    return tmpView;
                 }
                 else bodyExp = this.createFunction(decl);
                 ExternalFunction function = this.customFunctions.createUDF(
