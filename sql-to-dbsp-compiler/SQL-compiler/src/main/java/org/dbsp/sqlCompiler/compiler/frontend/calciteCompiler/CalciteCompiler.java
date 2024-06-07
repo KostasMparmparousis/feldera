@@ -73,6 +73,9 @@ import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlAggFunction;
+import org.apache.calcite.sql.SqlUnresolvedFunction;
 import org.apache.calcite.sql.ddl.SqlAttributeDefinition;
 import org.apache.calcite.sql.ddl.SqlColumnDeclaration;
 import org.apache.calcite.sql.ddl.SqlCreateTable;
@@ -786,10 +789,14 @@ public class CalciteCompiler implements IWritesLogs {
             SqlBasicCall call = (SqlBasicCall) node;
             SqlOperator operator = call.getOperator();
             List<SqlNode> operands = call.getOperandList();
+            boolean isAggregateFunction = false;
+            if (operator instanceof SqlFunction) {
+                isAggregateFunction = operator instanceof SqlUnresolvedFunction || operator instanceof SqlAggFunction;
+            }
 
             // Handle each operand recursively
             for (int i = 0; i < operands.size(); i++) {
-                if (i > 0) {
+                if (i > 0 && !isAggregateFunction) {
                     // Add operator between operands
                     expression.append(" ").append(operator).append(" ");
                 }
@@ -803,6 +810,11 @@ public class CalciteCompiler implements IWritesLogs {
                 if (isNested) {
                     expression.append(")");
                 }
+            }
+
+            if (isAggregateFunction) {
+                expression.insert(0, operator + "(");
+                expression.append(")");
             }
         } else {
             // Handle leaf nodes (non-operator nodes)
@@ -836,9 +848,11 @@ public class CalciteCompiler implements IWritesLogs {
 
             String tableName = decl.getName().toString() + "_INPUT";
             String viewName = decl.getName().toString() + "_OUTPUT";
-            builder.append("CREATE TABLE " + tableName + "(");
-            decl.getParameters().unparse(writer, 0, 0);
-            builder.append(");\n");
+            if (decl.getParameters().size() > 0) {
+                builder.append("CREATE TABLE " + tableName + "(");
+                decl.getParameters().unparse(writer, 0, 0);
+                builder.append(");\n");
+            }
 
             SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
             try {
@@ -848,22 +862,58 @@ public class CalciteCompiler implements IWritesLogs {
                 if (sqlNode instanceof SqlSelect) {
                     SqlSelect select = (SqlSelect) sqlNode;
 
+                    String selectString = "SELECT ";
+                    int count = 0;
                     // Get the SELECT identifier
-                    SqlNode selectNode = select.getSelectList().get(0);
+                    for (SqlNode selectNode : select.getSelectList()) {
+                        if (count++ > 0) {
+                            selectString += ", ";
+                        }
+                        selectString += selectNode.toString().replace("`", "");
+                    }
 
                     // Get the FROM identifier
                     SqlNode fromNode = select.getFrom();
 
+                    builder.append("CREATE VIEW " + viewName + " AS\n" + selectString + " FROM "
+                            + fromNode.toString());
+
                     // Get the WHERE condition
                     SqlNode whereNode = select.getWhere();
 
-                    builder.append("CREATE VIEW " + viewName + " AS\nSELECT " + selectNode.toString() + " FROM "
-                            + fromNode.toString());
                     if (whereNode != null && whereNode instanceof SqlBasicCall) {
-                        builder.append(", " + tableName + "\nWHERE ");
+                        if (decl.getParameters().size() > 0) builder.append(", " + tableName);
+                        builder.append("\nWHERE ");
 
                         String whereClause = extractOperands(whereNode, decl.getParameters(), tableName);
                         builder.append(whereClause.replace("`", ""));
+                    }
+
+                    if (select.getGroup() != null && select.getGroup().size() > 0) {
+                        String groupByString = "GROUP BY ";
+                        count = 0;
+                        // Get the GROUP BY identifier
+                        for (SqlNode groupByNode : select.getGroup()) {
+                            if (count++ > 0) {
+                                groupByString += ", ";
+                            }
+                            groupByString += groupByNode.toString();
+                        }
+
+                        if (count > 0) {
+                            builder.append("\n" + groupByString);
+                        }
+
+                        // Get the HAVING condition
+                        SqlNode havingNode = select.getHaving();
+
+                        if (havingNode != null && havingNode instanceof SqlBasicCall) {
+                            builder.append("\nHAVING ");
+
+                            String havingClause = extractOperands(havingNode, decl.getParameters(), tableName);
+                            // modify extractOperands to include aggregate functions
+                            builder.append(havingClause.replace("`", ""));
+                        }
                     }
                 }
             } catch (SqlParseException e) {
@@ -883,7 +933,6 @@ public class CalciteCompiler implements IWritesLogs {
                     tempView = Objects.requireNonNull(statement).as(CreateViewStatement.class);
             }
             assert tempView != null;
-            assert tempTable != null;
             return new Pair(tempTable, tempView);
         }
         catch (SqlParseException e) {
@@ -975,12 +1024,12 @@ public class CalciteCompiler implements IWritesLogs {
                     Pair<CreateTableStatement,CreateViewStatement> pair = createInlineQueryFunction(decl);
                     CreateTableStatement tmpTable = pair.getKey();
                     CreateViewStatement tmpView = pair.getValue();
-                    boolean success = this.calciteCatalog.addTable(decl.getName().toString() + "_INPUT", tmpTable.getEmulatedTable(), this.errorReporter,
-                            tmpTable) && this.calciteCatalog.addTable(decl.getName().toString() + "_OUTPUT", tmpView.getEmulatedTable(), this.errorReporter,
+                    boolean success = (tmpTable ==null || this.calciteCatalog.addTable(decl.getName().toString() + "_INPUT", tmpTable.getEmulatedTable(), this.errorReporter,
+                            tmpTable)) && this.calciteCatalog.addTable(decl.getName().toString() + "_OUTPUT", tmpView.getEmulatedTable(), this.errorReporter,
                             tmpView);
                     if (!success)
                         return null;
-                    midendCompiler.compile(tmpTable);
+                    if (tmpTable != null) midendCompiler.compile(tmpTable);
                     return tmpView;
                 }
                 else bodyExp = this.createFunction(decl);
