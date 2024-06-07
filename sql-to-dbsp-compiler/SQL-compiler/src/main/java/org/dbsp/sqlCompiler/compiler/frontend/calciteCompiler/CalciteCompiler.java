@@ -70,6 +70,9 @@ import org.apache.calcite.sql.SqlOperatorTable;
 import org.apache.calcite.sql.SqlTypeNameSpec;
 import org.apache.calcite.sql.SqlUserDefinedTypeNameSpec;
 import org.apache.calcite.sql.SqlWriter;
+import org.apache.calcite.sql.SqlSelect;
+import org.apache.calcite.sql.SqlBasicCall;
+import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.ddl.SqlAttributeDefinition;
 import org.apache.calcite.sql.ddl.SqlColumnDeclaration;
 import org.apache.calcite.sql.ddl.SqlCreateTable;
@@ -93,6 +96,7 @@ import org.apache.calcite.sql2rel.RelDecorrelator;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
 import org.apache.calcite.sql2rel.StandardConvertletTable;
 import org.apache.calcite.tools.RelBuilder;
+import org.apache.calcite.util.Pair;
 import org.dbsp.generated.parser.DbspParserImpl;
 import org.dbsp.sqlCompiler.compiler.CompilerOptions;
 import org.dbsp.sqlCompiler.compiler.IErrorReporter;
@@ -128,6 +132,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Iterator;
 import java.util.function.Consumer;
 
 /**
@@ -773,6 +778,121 @@ public class CalciteCompiler implements IWritesLogs {
         }
     }
 
+    public String extractOperands(SqlNode node, SqlNodeList parameters, String tableName) {
+        StringBuilder expression = new StringBuilder();
+
+        if (node instanceof SqlBasicCall) {
+            SqlBasicCall call = (SqlBasicCall) node;
+            SqlOperator operator = call.getOperator();
+            List<SqlNode> operands = call.getOperandList();
+
+            // Handle each operand recursively
+            for (int i = 0; i < operands.size(); i++) {
+                if (i > 0) {
+                    // Add operator between operands
+                    expression.append(" ").append(operator).append(" ");
+                }
+
+                // Add parentheses for nested operations
+                boolean isNested = operands.get(i) instanceof SqlBasicCall;
+                if (isNested) {
+                    expression.append("(");
+                }
+
+                // Recursively process the operand
+                expression.append(extractOperands(operands.get(i), parameters, tableName));
+
+                if (isNested) {
+                    expression.append(")");
+                }
+            }
+        } else {
+            // Handle leaf nodes (non-operator nodes)
+            boolean appended = false;
+            Iterator<SqlNode> paramIterator = parameters.iterator();
+            while (paramIterator.hasNext()) {
+                SqlNode column = paramIterator.next();
+                String columnString = column.toString();
+                String columnName = columnString.split(" ")[0].replace("`", "");
+                if (columnName.equals(node.toString())) {
+                    expression.append(tableName + "." + node.toString());
+                    appended = true;
+                    break;
+                }
+            }
+            if (!appended) {
+                expression.append(node.toString());
+            }
+        }
+
+        return expression.toString();
+    }
+
+    @Nullable Pair<CreateTableStatement, CreateViewStatement> createInlineQueryFunction(SqlCreateFunctionDeclaration decl){
+        SqlNode body = decl.getBody();
+        if (body == null)
+            return null;
+        try {
+            StringBuilder builder = new StringBuilder();
+            SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
+
+            String tableName = decl.getName().toString() + "_INPUT";
+            String viewName = decl.getName().toString() + "_OUTPUT";
+            builder.append("CREATE TABLE " + tableName + "(");
+            decl.getParameters().unparse(writer, 0, 0);
+            builder.append(");\n");
+
+            SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
+            try {
+                // Parse the SQL query
+                SqlNode sqlNode = parser.parseQuery();
+
+                if (sqlNode instanceof SqlSelect) {
+                    SqlSelect select = (SqlSelect) sqlNode;
+
+                    // Get the SELECT identifier
+                    SqlNode selectNode = select.getSelectList().get(0);
+
+                    // Get the FROM identifier
+                    SqlNode fromNode = select.getFrom();
+
+                    // Get the WHERE condition
+                    SqlNode whereNode = select.getWhere();
+
+                    builder.append("CREATE VIEW " + viewName + " AS\nSELECT " + selectNode.toString() + " FROM "
+                            + fromNode.toString());
+                    if (whereNode != null && whereNode instanceof SqlBasicCall) {
+                        builder.append(", " + tableName + "\nWHERE ");
+
+                        String whereClause = extractOperands(whereNode, decl.getParameters(), tableName);
+                        builder.append(whereClause.replace("`", ""));
+                    }
+                }
+            } catch (SqlParseException e) {
+                e.printStackTrace();
+            }
+            String sql = builder.toString();
+            CalciteCompiler clone = new CalciteCompiler(this);
+            SqlNodeList list = clone.parseStatements(sql);
+
+            CreateTableStatement tempTable = null;
+            CreateViewStatement tempView = null;
+            for (SqlNode node : list) {
+                FrontEndStatement statement = clone.compile(node.toString(), node, null);
+                if (statement instanceof CreateTableStatement)
+                    tempTable = Objects.requireNonNull(statement).as(CreateTableStatement.class);
+                else if (statement instanceof CreateViewStatement)
+                    tempView = Objects.requireNonNull(statement).as(CreateViewStatement.class);
+            }
+            assert tempView != null;
+            assert tempTable != null;
+            return new Pair(tempTable, tempView);
+        }
+        catch (SqlParseException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     /** Compile a SQL statement.
      * @param node         Compiled version of the SQL statement.
      * @param sqlStatement SQL statement as a string to compile.
@@ -836,11 +956,25 @@ public class CalciteCompiler implements IWritesLogs {
                         });
                 RelDataType structType = this.typeFactory.createStructType(parameters);
                 SqlDataTypeSpec retType = decl.getReturnType();
-                RelDataType returnType = this.specToRel(retType);
-                Boolean nullableResult = retType.getNullable();
-                if (nullableResult != null)
-                    returnType = this.typeFactory.createTypeWithNullability(returnType,  nullableResult);
-                RexNode bodyExp = this.createFunction(decl);
+                RelDataType returnType = null;
+                if (retType != null) {
+                    returnType = this.specToRel(retType);
+                    Boolean nullableResult = retType.getNullable();
+                    if (nullableResult != null)
+                        returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
+                }
+                RexNode bodyExp = null;
+                if (decl.getBody().isA(SqlKind.QUERY)) {
+                    Pair<CreateTableStatement,CreateViewStatement> pair = createInlineQueryFunction(decl);
+                    CreateTableStatement tmpTable = pair.getKey();
+                    CreateViewStatement tmpView = pair.getValue();
+                    boolean success = this.calciteCatalog.addTable(decl.getName().toString() + "_INPUT", tmpTable.getEmulatedTable(), this.errorReporter,
+                            tmpTable) && this.calciteCatalog.addTable(decl.getName().toString() + "_OUTPUT", tmpView.getEmulatedTable(), this.errorReporter,
+                            tmpView);
+                    if (!success)
+                        return null;
+                }
+                else bodyExp = this.createFunction(decl);
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
                 return new CreateFunctionStatement(node, sqlStatement, function);
