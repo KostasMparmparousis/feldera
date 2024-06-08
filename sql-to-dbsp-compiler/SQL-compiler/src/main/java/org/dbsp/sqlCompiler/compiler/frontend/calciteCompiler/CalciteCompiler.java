@@ -67,10 +67,14 @@ import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlOperatorTable;
+import org.apache.calcite.sql.SqlSetOperator;
+import org.apache.calcite.sql.SqlOrderBy;
 import org.apache.calcite.sql.SqlTypeNameSpec;
 import org.apache.calcite.sql.SqlUserDefinedTypeNameSpec;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.SqlSelect;
+import org.apache.calcite.sql.SqlJoin;
+import org.apache.calcite.sql.JoinType;
 import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlFunction;
@@ -838,7 +842,142 @@ public class CalciteCompiler implements IWritesLogs {
         return expression.toString();
     }
 
-    @Nullable Pair<CreateTableStatement, CreateViewStatement> createInlineQueryFunction(SqlCreateFunctionDeclaration decl){
+    public String buildSelectStatement(SqlNode sqlNode, String tableName, SqlCreateFunctionDeclaration decl) {
+        StringBuilder builder = new StringBuilder();
+        SqlSelect select = (SqlSelect) sqlNode;
+
+        String selectString = "SELECT ";
+        int count = 0;
+        // Get the SELECT identifier
+        for (SqlNode selectNode : select.getSelectList()) {
+            if (count++ > 0) {
+                selectString += ", ";
+            }
+            selectString += selectNode.toString().replace("`", "");
+        }
+
+        builder.append(selectString);
+
+        // Get the FROM identifier
+        SqlNode fromNode = select.getFrom();
+        if (fromNode instanceof SqlJoin) {
+            SqlJoin join = (SqlJoin) fromNode;
+            SqlNode left = join.getLeft();
+            SqlNode right = join.getRight();
+            SqlNode condition = join.getCondition();
+            JoinType joinType = join.getJoinType();
+
+            String joinString = "\nFROM " + left.toString() + " " + joinType.name() + " JOIN "
+                    + right.toString()
+                    + " ON " + condition.toString();
+            joinString = joinString.replace("`", "");
+            builder.append(joinString);
+        } else
+            builder.append("\nFROM " + fromNode.toString());
+
+        // Get the WHERE condition
+        SqlNode whereNode = select.getWhere();
+
+        if (whereNode != null && whereNode instanceof SqlBasicCall) {
+            if (decl.getParameters().size() > 0)
+                builder.append(", " + tableName);
+            builder.append("\nWHERE ");
+
+            String whereClause = extractOperands(whereNode, decl.getParameters(), tableName);
+            builder.append(whereClause.replace("`", ""));
+        }
+
+        if (select.getGroup() != null && select.getGroup().size() > 0) {
+            String groupByString = "GROUP BY ";
+            count = 0;
+            // Get the GROUP BY identifier
+            for (SqlNode groupByNode : select.getGroup()) {
+                if (count++ > 0) {
+                    groupByString += ", ";
+                }
+                groupByString += groupByNode.toString();
+            }
+
+            if (count > 0) {
+                builder.append("\n" + groupByString);
+            }
+
+            // Get the HAVING condition
+            SqlNode havingNode = select.getHaving();
+
+            if (havingNode != null && havingNode instanceof SqlBasicCall) {
+                builder.append("\nHAVING ");
+
+                String havingClause = extractOperands(havingNode, decl.getParameters(), tableName);
+                // modify extractOperands to include aggregate functions
+                builder.append(havingClause.replace("`", ""));
+            }
+        }
+
+        return builder.toString();
+    }
+
+    // Recursive method to process SQL nodes
+    private String processSqlNode(SqlNode sqlNode, String tableName, SqlCreateFunctionDeclaration decl) {
+        StringBuilder result = new StringBuilder();
+
+        if (sqlNode instanceof SqlSelect) {
+            result.append(buildSelectStatement(sqlNode, tableName, decl));
+        } else if (sqlNode instanceof SqlBasicCall) {
+            SqlBasicCall basicCall = (SqlBasicCall) sqlNode;
+            if (basicCall.getOperator() instanceof SqlSetOperator) {
+                SqlSetOperator setOperator = (SqlSetOperator) basicCall.getOperator();
+
+                result.append(processSqlNode(basicCall.getOperandList().get(0), tableName, decl));
+
+                String operator = setOperator.toString();
+                result.append("\n").append(operator).append("\n");
+
+                result.append(processSqlNode(basicCall.getOperandList().get(1), tableName, decl));
+            }
+        } else if (sqlNode instanceof SqlOrderBy) {
+            SqlOrderBy orderBy = (SqlOrderBy) sqlNode;
+            if (orderBy.query instanceof SqlBasicCall) {
+                SqlBasicCall basicCall = (SqlBasicCall) orderBy.query;
+                if (basicCall.getOperator() instanceof SqlSetOperator) {
+                    SqlSetOperator setOperator = (SqlSetOperator) basicCall.getOperator();
+
+                    result.append(processSqlNode(basicCall.getOperandList().get(0), tableName, decl));
+
+                    String operator = setOperator.toString();
+                    result.append("\n").append(operator).append("\n");
+
+                    result.append(processSqlNode(basicCall.getOperandList().get(1), tableName, decl));
+                    SqlNodeList orderList = orderBy.orderList;
+                    result.append("\nORDER BY ");
+                    int count = 0;
+                    for (SqlNode orderItem : orderList) {
+                        if (count++ > 0) {
+                            result.append(", ");
+                        }
+                        result.append(orderItem.toString().replace("`", ""));
+                    }
+                }
+            } else {
+                // Handle regular ORDER BY
+                result.append(buildSelectStatement(orderBy.query, tableName, decl));
+                SqlNodeList orderList = orderBy.orderList;
+                result.append("\nORDER BY ");
+                int count = 0;
+                for (SqlNode orderItem : orderList) {
+                    if (count++ > 0) {
+                        result.append(", ");
+                    }
+                    result.append(orderItem.toString().replace("`", ""));
+                }
+            }
+        }
+
+        return result.toString();
+    }
+
+    @Nullable
+    Pair<CreateTableStatement, CreateViewStatement> createInlineQueryFunction(SqlCreateFunctionDeclaration decl) {
         SqlNode body = decl.getBody();
         if (body == null)
             return null;
@@ -858,64 +997,9 @@ public class CalciteCompiler implements IWritesLogs {
             try {
                 // Parse the SQL query
                 SqlNode sqlNode = parser.parseQuery();
+                builder.append("CREATE VIEW " + viewName + " AS\n");
+                builder.append(processSqlNode(sqlNode, tableName, decl));
 
-                if (sqlNode instanceof SqlSelect) {
-                    SqlSelect select = (SqlSelect) sqlNode;
-
-                    String selectString = "SELECT ";
-                    int count = 0;
-                    // Get the SELECT identifier
-                    for (SqlNode selectNode : select.getSelectList()) {
-                        if (count++ > 0) {
-                            selectString += ", ";
-                        }
-                        selectString += selectNode.toString().replace("`", "");
-                    }
-
-                    // Get the FROM identifier
-                    SqlNode fromNode = select.getFrom();
-
-                    builder.append("CREATE VIEW " + viewName + " AS\n" + selectString + " FROM "
-                            + fromNode.toString());
-
-                    // Get the WHERE condition
-                    SqlNode whereNode = select.getWhere();
-
-                    if (whereNode != null && whereNode instanceof SqlBasicCall) {
-                        if (decl.getParameters().size() > 0) builder.append(", " + tableName);
-                        builder.append("\nWHERE ");
-
-                        String whereClause = extractOperands(whereNode, decl.getParameters(), tableName);
-                        builder.append(whereClause.replace("`", ""));
-                    }
-
-                    if (select.getGroup() != null && select.getGroup().size() > 0) {
-                        String groupByString = "GROUP BY ";
-                        count = 0;
-                        // Get the GROUP BY identifier
-                        for (SqlNode groupByNode : select.getGroup()) {
-                            if (count++ > 0) {
-                                groupByString += ", ";
-                            }
-                            groupByString += groupByNode.toString();
-                        }
-
-                        if (count > 0) {
-                            builder.append("\n" + groupByString);
-                        }
-
-                        // Get the HAVING condition
-                        SqlNode havingNode = select.getHaving();
-
-                        if (havingNode != null && havingNode instanceof SqlBasicCall) {
-                            builder.append("\nHAVING ");
-
-                            String havingClause = extractOperands(havingNode, decl.getParameters(), tableName);
-                            // modify extractOperands to include aggregate functions
-                            builder.append(havingClause.replace("`", ""));
-                        }
-                    }
-                }
             } catch (SqlParseException e) {
                 e.printStackTrace();
             }
