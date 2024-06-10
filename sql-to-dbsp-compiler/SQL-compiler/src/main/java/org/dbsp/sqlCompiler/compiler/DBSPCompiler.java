@@ -449,8 +449,9 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             builder.append(functionParameter);
             functionParameters.add(functionParameter);
         }
+
+        // TODO: What if function body is SELECT ALL
         builder.append(")\nSELECT DISTINCT ");
-        // builder.append(")\nSELECT ");
         for (int i = 0; i < functionParameters.size(); i++) {
             if (i > 0) {
                 builder.append(", ");
