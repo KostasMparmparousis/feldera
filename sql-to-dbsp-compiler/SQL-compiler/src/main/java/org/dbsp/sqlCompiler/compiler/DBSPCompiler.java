@@ -417,7 +417,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             }
 
             String sql = builder.toString();
-            System.out.println(sql);
+            // System.out.println(sql);
             SqlNodeList list = frontend.parseStatements(sql);
             for (SqlNode node : list) {
                 result.add(frontend.compile(node.toString(), node, null));
@@ -442,8 +442,15 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             SqlCreateFunctionDeclaration decl) {
 
         SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-        builder.append("CREATE TABLE ").append(tableName).append("(");
-        decl.getParameters().unparse(writer, 0, 0);
+        builder.append("CREATE VIEW ").append(tableName).append("(");
+
+        for (int i = 0; i < decl.getParameters().size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
+            builder.append(functionParameter);
+        }
 
         List<String> parameterList = extractParameters(select);
 
