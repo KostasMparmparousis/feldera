@@ -324,18 +324,19 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 this.midend.compile(fe);
             }
 
-            // Compile all the inline table queries
-            for (SqlNode node : inlineQueryNodes) {
-                // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-                // System.out.println(node.toString() + "\n");
-                // System.out.println("Gets translated to: \n");
-                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment, this.midend);
-                if (fe == null)
-                    // error during compilation
-                    continue;
-                this.midend.compile(fe);
-                // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-            }
+            // // Compile all the inline table queries
+            // for (SqlNode node : inlineQueryNodes) {
+            // // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+            // // System.out.println(node.toString() + "\n");
+            // // System.out.println("Gets translated to: \n");
+            // FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment,
+            // this.midend);
+            // if (fe == null)
+            // // error during compilation
+            // continue;
+            // this.midend.compile(fe);
+            // // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+            // }
 
             // Compile the remaining "CREATE RELATION" statements
             for (SqlNode node : statementsWithInlineQuery) {
@@ -406,8 +407,10 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 SqlNode sqlNode = parser.parseQuery();
                 if (sqlNode instanceof SqlSelect) {
                     SqlSelect select = (SqlSelect) sqlNode;
-                    appendInsertStatement(builder, tableName, select, decl);
+                    appendInputTableStatement(builder, tableName, select, decl);
+                    builder.append(this.frontend.createInlineQueryFunctionAlt(decl));
                     appendCreateViewStatement(builder, name, tableName, viewName, select, decl);
+                    // dropRelations(builder, tableName, viewName);
                 }
             } catch (SqlParseException e) {
                 e.printStackTrace();
@@ -433,6 +436,25 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             }
         }
         return null;
+    }
+
+    private void appendInputTableStatement(StringBuilder builder, String tableName, SqlSelect select,
+            SqlCreateFunctionDeclaration decl) {
+
+        SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
+        builder.append("CREATE TABLE ").append(tableName).append("(");
+        decl.getParameters().unparse(writer, 0, 0);
+
+        List<String> parameterList = extractParameters(select);
+
+        builder.append(") AS\nSELECT DISTINCT ");
+        for (int i = 0; i < parameterList.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(parameterList.get(i));
+        }
+        builder.append(" FROM ").append(select.getFrom().toString()).append(";\n\n");
     }
 
     private void appendInsertStatement(StringBuilder builder, String tableName, SqlSelect select,
@@ -501,6 +523,11 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             builder.append(", (SELECT * FROM ").append(viewName).append(") AS function_output\n");
             builder.append("FROM ").append(tableName).append(";\n");
         }
+    }
+
+    private void dropRelations(StringBuilder builder, String tableName, String viewName) {
+        builder.append("\nDROP TABLE ").append(tableName).append(";\n\n");
+        builder.append("DROP VIEW ").append(viewName).append(";\n");
     }
 
     public ObjectNode getIOMetadataAsJson() {

@@ -1014,15 +1014,8 @@ public class CalciteCompiler implements IWritesLogs {
         try {
             StringBuilder builder = new StringBuilder();
             SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-
             String tableName = decl.getName().toString() + "_INPUT";
             String viewName = decl.getName().toString() + "_OUTPUT";
-            if (decl.getParameters().size() > 0) {
-                builder.append("CREATE TABLE " + tableName + "(");
-                decl.getParameters().unparse(writer, 0, 0);
-                builder.append(");\n\n");
-            }
-
             SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
             try {
                 // Parse the SQL query
@@ -1047,7 +1040,7 @@ public class CalciteCompiler implements IWritesLogs {
                 e.printStackTrace();
             }
             String sql = builder.toString();
-            System.out.println(sql);
+            // System.out.println(sql);
             SqlNodeList list = this.parseStatements(sql);
 
             CreateTableStatement tempTable = null;
@@ -1064,6 +1057,43 @@ public class CalciteCompiler implements IWritesLogs {
         } catch (SqlParseException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public String createInlineQueryFunctionAlt(SqlCreateFunctionDeclaration decl) {
+        SqlNode body = decl.getBody();
+        if (body == null)
+            return null;
+
+        StringBuilder builder = new StringBuilder();
+        SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
+        String tableName = decl.getName().toString() + "_INPUT";
+        String viewName = decl.getName().toString() + "_OUTPUT";
+        SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
+        try {
+            // Parse the SQL query
+            SqlNode sqlNode = parser.parseQuery();
+            builder.append("CREATE VIEW " + viewName + " AS\n");
+            builder.append(processSqlNode(sqlNode, tableName, decl));
+            if (isAggregate(decl)) {
+                builder.append("\nGROUP BY ");
+                for (int i = 0; i < decl.getParameters().size(); i++) {
+                    if (i > 0) {
+                        builder.append(", ");
+                    }
+                    String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`",
+                            "");
+                    builder.append(functionParameter);
+                }
+            }
+            // later
+            builder.append(";\n\n");
+
+        } catch (SqlParseException e) {
+            e.printStackTrace();
+        }
+        String sql = builder.toString();
+        // System.out.println(sql);
+        return sql;
     }
 
     @Nullable
