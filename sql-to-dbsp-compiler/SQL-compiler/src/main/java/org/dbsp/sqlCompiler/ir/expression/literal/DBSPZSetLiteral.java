@@ -58,7 +58,7 @@ public final class DBSPZSetLiteral extends DBSPLiteral
     /**
      * Creates an empty zset with the specified element type.
      */
-    DBSPZSetLiteral(DBSPType elementType) {
+    public DBSPZSetLiteral(DBSPType elementType) {
         super(CalciteObject.EMPTY, new DBSPTypeZSet(elementType), false);
         this.elementType = elementType;
         this.data = new HashMap<>();
@@ -140,9 +140,10 @@ public final class DBSPZSetLiteral extends DBSPLiteral
     @Override
     public void accept(InnerVisitor visitor) {
         VisitDecision decision = visitor.preorder(this);
-        if (decision.stop()) return;
+        if (decision.stop())
+            return;
         visitor.push(this);
-        for (DBSPExpression expr: this.data.keySet())
+        for (DBSPExpression expr : this.data.keySet())
             expr.accept(visitor);
         visitor.pop(this);
         visitor.postorder(this);
@@ -167,10 +168,13 @@ public final class DBSPZSetLiteral extends DBSPLiteral
 
     @Override
     public boolean sameValue(@Nullable DBSPLiteral o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
         DBSPZSetLiteral that = (DBSPZSetLiteral) o;
-        if (!this.type.sameType(that.type)) return false;
+        if (!this.type.sameType(that.type))
+            return false;
         return this.minus(that).size() == 0;
     }
 

@@ -28,13 +28,22 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.calcite.runtime.CalciteContextException;
 import org.apache.calcite.schema.Schema;
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlOperatorTable;
+import org.apache.calcite.sql.SqlSelect;
+import org.apache.calcite.sql.SqlUnresolvedFunction;
+import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParseException;
+import org.apache.calcite.sql.parser.SqlParser;
+import org.apache.calcite.sql.pretty.SqlPrettyWriter;
+import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.util.SqlOperatorTables;
+import org.apache.calcite.sql.validate.SqlUserDefinedFunction;
 import org.dbsp.sqlCompiler.circuit.DBSPCircuit;
 import org.dbsp.sqlCompiler.circuit.DBSPPartialCircuit;
 import org.dbsp.sqlCompiler.compiler.backend.ToDotVisitor;
@@ -54,6 +63,7 @@ import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionD
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateFunctionStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.FrontEndStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.IHasSchema;
+import org.dbsp.sqlCompiler.compiler.frontend.parser.SqlCreateLocalView;
 import org.dbsp.sqlCompiler.compiler.frontend.parser.SqlLateness;
 import org.dbsp.sqlCompiler.compiler.visitors.outer.CircuitOptimizer;
 import org.dbsp.sqlCompiler.ir.expression.DBSPVariablePath;
@@ -75,17 +85,19 @@ import java.util.List;
  * The protocol is:
  * - create compiler
  * - repeat as much as necessary:
- *   - compile a sequence of SQL statements
- *     (CREATE TABLE, CREATE VIEW)
- *   - get the resulting circuit, starting a new one
+ * - compile a sequence of SQL statements
+ * (CREATE TABLE, CREATE VIEW)
+ * - get the resulting circuit, starting a new one
  * This protocol allows one compiler to generate multiple independent circuits.
  * The compiler can also compile INSERT statements by simulating their
  * execution and keeping track of the contents of each table.
  * The contents after insertions can be obtained using getTableContents().
  */
 public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorReporter {
-    /** Name of the Rust file that will contain the user-defined functions.
-     * The definitions supplied by the user will be copied here. */
+    /**
+     * Name of the Rust file that will contain the user-defined functions.
+     * The definitions supplied by the user will be copied here.
+     */
     public static final String UDF_FILE_NAME = "udf.rs";
 
     final GlobalTypes globalTypes = new GlobalTypes();
@@ -96,7 +108,9 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         None,
         /** Data received from stdin. */
         Stdin,
-        /** Data read from a file.  We read the entire file upfront, and then we compile. */
+        /**
+         * Data read from a file. We read the entire file upfront, and then we compile.
+         */
         File,
         /** Data received through API calls (compileStatement/s). */
         API,
@@ -170,13 +184,14 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
     /**
      * Report an error or warning during compilation.
-     * @param range      Position in source where error is located.
-     * @param warning    True if this is a warning.
-     * @param errorType  A short string that categorizes the error type.
-     * @param message    Error message.
+     *
+     * @param range     Position in source where error is located.
+     * @param warning   True if this is a warning.
+     * @param errorType A short string that categorizes the error type.
+     * @param message   Error message.
      */
     public void reportProblem(SourcePositionRange range, boolean warning,
-                              String errorType, String message) {
+            String errorType, String message) {
         if (warning)
             this.hasWarnings = true;
         this.messages.reportProblem(range, warning, errorType, message);
@@ -188,15 +203,16 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
     /**
      * @param generate
-     * If 'false' the next "create view" statements will not generate
-     * an output for the circuit
+     *                 If 'false' the next "create view" statements will not
+     *                 generate
+     *                 an output for the circuit
      */
     public void generateOutputForNextView(boolean generate) {
         this.frontend.generateOutputForNextView(generate);
         this.midend.generateOutputForNextView(generate);
     }
 
-   void setSource(InputSource source) {
+    void setSource(InputSource source) {
         if (this.inputSources != InputSource.None &&
                 this.inputSources != source)
             throw new UnsupportedException("Input data already received from " + this.inputSources,
@@ -215,7 +231,6 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             // Otherwise, we append the statements to the sources.
             this.sources.append(statements);
         }
-
         try {
             // Parse using Calcite
             SqlNodeList parsed;
@@ -232,10 +247,11 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             if (this.hasErrors())
                 return;
 
-            // Compile first the statements that define functions, types, and lateness, except for inline table queries
+            // Compile first the statements that define functions, types, and lateness,
+            // except for inline table queries
             List<SqlFunction> functions = new ArrayList<>();
             List<SqlNode> inlineQueryNodes = new ArrayList<>();
-            for (SqlNode node: parsed) {
+            for (SqlNode node : parsed) {
                 Logger.INSTANCE.belowLevel(this, 2)
                         .append("Parsing result: ")
                         .append(node.toString())
@@ -283,7 +299,8 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 }
             }
 
-            //compile all "CREATE RELATION" statements, except for the ones that use the inline table queries
+            // compile all "CREATE RELATION" statements, except for the ones that use the
+            // inline table queries
             List<SqlNode> statementsWithInlineQuery = new ArrayList<>();
             for (SqlNode node : parsed) {
                 SqlKind kind = node.getKind();
@@ -309,22 +326,32 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
             // Compile all the inline table queries
             for (SqlNode node : inlineQueryNodes) {
+                System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+                System.out.println(node.toString() + "\n");
+                System.out.println("Gets translated to: \n");
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment, this.midend);
                 if (fe == null)
                     // error during compilation
                     continue;
                 this.midend.compile(fe);
+                System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
             }
 
             // Compile the remaining "CREATE RELATION" statements
             for (SqlNode node : statementsWithInlineQuery) {
+                System.out.println("**************************************\n");
+                System.out.println(node.toString() + "\n");
+                System.out.println("Gets translated to: \n");
                 if (node instanceof SqlLateness)
                     continue;
-                FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
-                if (fe == null)
-                    // error during compilation
-                    continue;
-                this.midend.compile(fe);
+                SqlCreateLocalView cv = (SqlCreateLocalView) node;
+                SqlNode query = cv.query;
+                SqlIdentifier viewName = cv.name;
+                List<FrontEndStatement> result = this.generateFrontEndStatements(viewName, query, inlineQueryNodes);
+                for (FrontEndStatement fe : result) {
+                    this.midend.compile(fe);
+                }
+                System.out.println("**************************************\n");
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
@@ -360,13 +387,124 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         }
     }
 
+    public List<FrontEndStatement> generateFrontEndStatements(SqlIdentifier name, SqlNode statement,
+            List<SqlNode> inlineQueryNodes) {
+        List<FrontEndStatement> result = new ArrayList<>();
+        try {
+            StringBuilder builder = new StringBuilder();
+
+            SqlCreateFunctionDeclaration decl = findFunctionDeclaration(statement, inlineQueryNodes);
+            if (decl == null) {
+                throw new RuntimeException("Function declaration not found.");
+            }
+
+            String tableName = decl.getName().toString() + "_INPUT";
+            String viewName = decl.getName().toString() + "_OUTPUT";
+
+            SqlParser parser = SqlParser.create(statement.toString().replace("`", ""));
+            try {
+                SqlNode sqlNode = parser.parseQuery();
+                if (sqlNode instanceof SqlSelect) {
+                    SqlSelect select = (SqlSelect) sqlNode;
+                    appendInsertStatement(builder, tableName, select, decl);
+                    appendCreateViewStatement(builder, name, tableName, viewName, select, decl);
+                }
+            } catch (SqlParseException e) {
+                e.printStackTrace();
+            }
+
+            String sql = builder.toString();
+            System.out.println(sql);
+            SqlNodeList list = frontend.parseStatements(sql);
+            for (SqlNode node : list) {
+                result.add(frontend.compile(node.toString(), node, null));
+            }
+        } catch (SqlParseException e) {
+            throw new RuntimeException(e);
+        }
+        return result;
+    }
+
+    private SqlCreateFunctionDeclaration findFunctionDeclaration(SqlNode statement, List<SqlNode> inlineQueryNodes) {
+        for (SqlNode functNode : inlineQueryNodes) {
+            SqlCreateFunctionDeclaration tmp = (SqlCreateFunctionDeclaration) functNode;
+            if (statement.toString().contains(tmp.getName().toString())) {
+                return tmp;
+            }
+        }
+        return null;
+    }
+
+    private void appendInsertStatement(StringBuilder builder, String tableName, SqlSelect select,
+            SqlCreateFunctionDeclaration decl) {
+        builder.append("INSERT INTO ").append(tableName).append("(");
+
+        List<String> parameterList = extractParameters(select);
+        List<String> functionParameters = new ArrayList<>();
+        for (int i = 0; i < parameterList.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
+            builder.append(functionParameter);
+            functionParameters.add(functionParameter);
+        }
+        builder.append(")\nSELECT DISTINCT ");
+        // builder.append(")\nSELECT ");
+        for (int i = 0; i < functionParameters.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(parameterList.get(i));
+        }
+        builder.append(" FROM ").append(select.getFrom().toString()).append(";\n\n");
+    }
+
+    private List<String> extractParameters(SqlSelect select) {
+        List<String> parameterList = new ArrayList<>();
+        for (SqlNode selectNode : select.getSelectList()) {
+            if (selectNode instanceof SqlCall) {
+                SqlCall call = (SqlCall) selectNode;
+                List<SqlNode> operands = call.getOperandList();
+                SqlOperator function = call.getOperator();
+                if (function != null && "AS".equals(function.toString())) {
+                    List<SqlNode> functionOperands = ((SqlCall) operands.get(0)).getOperandList();
+                    for (SqlNode operand : functionOperands) {
+                        parameterList.add(operand.toString());
+                    }
+                } else {
+                    for (SqlNode operand : operands) {
+                        parameterList.add(operand.toString());
+                    }
+                }
+            }
+        }
+        return parameterList;
+    }
+
+    private void appendCreateViewStatement(StringBuilder builder, SqlIdentifier name, String tableName, String viewName,
+            SqlSelect select, SqlCreateFunctionDeclaration decl) {
+        builder.append("CREATE VIEW ").append(name.getSimple()).append(" AS\n");
+        builder.append("SELECT ");
+        List<String> parameterList = extractParameters(select);
+        for (int i = 0; i < decl.getParameters().size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
+            builder.append(functionParameter).append(" AS ").append(parameterList.get(i));
+        }
+        builder.append(", (SELECT * FROM ").append(viewName).append(") AS function_output\n");
+        builder.append("FROM ").append(tableName).append(";\n");
+    }
+
     public ObjectNode getIOMetadataAsJson() {
         ObjectMapper mapper = new ObjectMapper();
         ArrayNode inputs = mapper.createArrayNode();
-        for (IHasSchema input: this.metadata.inputTables.values())
+        for (IHasSchema input : this.metadata.inputTables.values())
             inputs.add(input.asJson());
         ArrayNode outputs = mapper.createArrayNode();
-        for (IHasSchema output: this.metadata.outputViews.values())
+        for (IHasSchema output : this.metadata.outputViews.values())
             outputs.add(output.asJson());
         ObjectNode ios = mapper.createObjectNode();
         ios.set("inputs", inputs);
@@ -418,9 +556,12 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         return this.messages.exitCode != 0;
     }
 
-    /** Get the circuit generated by compiling the statements to far.
+    /**
+     * Get the circuit generated by compiling the statements to far.
      * Start a new circuit.
-     * @param name  Name to use for the produced circuit. */
+     *
+     * @param name Name to use for the produced circuit.
+     */
     public DBSPCircuit getFinalCircuit(String name) {
         if (this.circuit == null) {
             DBSPPartialCircuit circuit = this.midend.getFinalCircuit();
@@ -436,12 +577,18 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         return result;
     }
 
-    /** Get the contents of the tables as a result of all the INSERT statements compiled. */
+    /**
+     * Get the contents of the tables as a result of all the INSERT statements
+     * compiled.
+     */
     public TableContents getTableContents() {
         return this.midend.getTableContents();
     }
 
-    /** Empty the contents of all tables that were populated by INSERT or DELETE statements */
+    /**
+     * Empty the contents of all tables that were populated by INSERT or DELETE
+     * statements
+     */
     public void clearTables() {
         this.midend.clearTables();
     }
