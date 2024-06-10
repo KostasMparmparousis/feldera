@@ -999,6 +999,13 @@ public class CalciteCompiler implements IWritesLogs {
         return result.toString();
     }
 
+    public boolean isAggregate(SqlCreateFunctionDeclaration decl) {
+        // TODO: Function body
+        if (decl.getReturnType() == null)
+            return false;
+        return true;
+    }
+
     @Nullable
     Pair<CreateTableStatement, CreateViewStatement> createInlineQueryFunction(SqlCreateFunctionDeclaration decl) {
         SqlNode body = decl.getBody();
@@ -1022,7 +1029,17 @@ public class CalciteCompiler implements IWritesLogs {
                 SqlNode sqlNode = parser.parseQuery();
                 builder.append("CREATE VIEW " + viewName + " AS\n");
                 builder.append(processSqlNode(sqlNode, tableName, decl));
-                // builder.append("\nGROUP BY USERAGE"); // replace this with the correct method
+                if (isAggregate(decl)) {
+                    builder.append("\nGROUP BY ");
+                    for (int i = 0; i < decl.getParameters().size(); i++) {
+                        if (i > 0) {
+                            builder.append(", ");
+                        }
+                        String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`",
+                                "");
+                        builder.append(functionParameter);
+                    }
+                }
                 // later
                 builder.append(";\n");
 

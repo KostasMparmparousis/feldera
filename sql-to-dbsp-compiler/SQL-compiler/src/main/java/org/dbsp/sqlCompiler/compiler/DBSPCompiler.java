@@ -326,22 +326,22 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
             // Compile all the inline table queries
             for (SqlNode node : inlineQueryNodes) {
-                System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-                System.out.println(node.toString() + "\n");
-                System.out.println("Gets translated to: \n");
+                // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+                // System.out.println(node.toString() + "\n");
+                // System.out.println("Gets translated to: \n");
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment, this.midend);
                 if (fe == null)
                     // error during compilation
                     continue;
                 this.midend.compile(fe);
-                System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+                // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
             }
 
             // Compile the remaining "CREATE RELATION" statements
             for (SqlNode node : statementsWithInlineQuery) {
-                System.out.println("**************************************\n");
-                System.out.println(node.toString() + "\n");
-                System.out.println("Gets translated to: \n");
+                // System.out.println("**************************************\n");
+                // System.out.println(node.toString() + "\n");
+                // System.out.println("Gets translated to: \n");
                 if (node instanceof SqlLateness)
                     continue;
                 SqlCreateLocalView cv = (SqlCreateLocalView) node;
@@ -351,7 +351,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 for (FrontEndStatement fe : result) {
                     this.midend.compile(fe);
                 }
-                System.out.println("**************************************\n");
+                // System.out.println("**************************************\n");
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
@@ -450,7 +450,6 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             functionParameters.add(functionParameter);
         }
 
-        // TODO: What if function body is SELECT ALL
         builder.append(")\nSELECT DISTINCT ");
         for (int i = 0; i < functionParameters.size(); i++) {
             if (i > 0) {
@@ -486,17 +485,22 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
     private void appendCreateViewStatement(StringBuilder builder, SqlIdentifier name, String tableName, String viewName,
             SqlSelect select, SqlCreateFunctionDeclaration decl) {
         builder.append("CREATE VIEW ").append(name.getSimple()).append(" AS\n");
-        builder.append("SELECT ");
-        List<String> parameterList = extractParameters(select);
-        for (int i = 0; i < decl.getParameters().size(); i++) {
-            if (i > 0) {
-                builder.append(", ");
+
+        if (!this.frontend.isAggregate(decl)) {
+            builder.append("SELECT * FROM ").append(viewName).append(";\n");
+        } else {
+            builder.append("SELECT ");
+            List<String> parameterList = extractParameters(select);
+            for (int i = 0; i < decl.getParameters().size(); i++) {
+                if (i > 0) {
+                    builder.append(", ");
+                }
+                String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
+                builder.append(functionParameter).append(" AS ").append(parameterList.get(i));
             }
-            String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
-            builder.append(functionParameter).append(" AS ").append(parameterList.get(i));
+            builder.append(", (SELECT * FROM ").append(viewName).append(") AS function_output\n");
+            builder.append("FROM ").append(tableName).append(";\n");
         }
-        builder.append(", (SELECT * FROM ").append(viewName).append(") AS function_output\n");
-        builder.append("FROM ").append(tableName).append(";\n");
     }
 
     public ObjectNode getIOMetadataAsJson() {
