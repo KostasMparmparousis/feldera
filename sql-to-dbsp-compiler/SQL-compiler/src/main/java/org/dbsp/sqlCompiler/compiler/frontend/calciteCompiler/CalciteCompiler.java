@@ -78,6 +78,7 @@ import org.apache.calcite.sql.JoinType;
 import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlUnresolvedFunction;
 import org.apache.calcite.sql.ddl.SqlAttributeDefinition;
@@ -1006,68 +1007,15 @@ public class CalciteCompiler implements IWritesLogs {
         return true;
     }
 
-    @Nullable
-    Pair<CreateTableStatement, CreateViewStatement> createInlineQueryFunction(SqlCreateFunctionDeclaration decl) {
-        SqlNode body = decl.getBody();
-        if (body == null)
-            return null;
-        try {
-            StringBuilder builder = new StringBuilder();
-            SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-            String tableName = decl.getName().toString() + "_INPUT";
-            String viewName = decl.getName().toString() + "_OUTPUT";
-            SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
-            try {
-                // Parse the SQL query
-                SqlNode sqlNode = parser.parseQuery();
-                builder.append("CREATE VIEW " + viewName + " AS\n");
-                builder.append(processSqlNode(sqlNode, tableName, decl));
-                if (isAggregate(decl)) {
-                    builder.append("\nGROUP BY ");
-                    for (int i = 0; i < decl.getParameters().size(); i++) {
-                        if (i > 0) {
-                            builder.append(", ");
-                        }
-                        String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`",
-                                "");
-                        builder.append(functionParameter);
-                    }
-                }
-                // later
-                builder.append(";\n");
-
-            } catch (SqlParseException e) {
-                e.printStackTrace();
-            }
-            String sql = builder.toString();
-            // System.out.println(sql);
-            SqlNodeList list = this.parseStatements(sql);
-
-            CreateTableStatement tempTable = null;
-            CreateViewStatement tempView = null;
-            for (SqlNode node : list) {
-                FrontEndStatement statement = this.compile(node.toString(), node, null);
-                if (statement instanceof CreateTableStatement)
-                    tempTable = Objects.requireNonNull(statement).as(CreateTableStatement.class);
-                else if (statement instanceof CreateViewStatement)
-                    tempView = Objects.requireNonNull(statement).as(CreateViewStatement.class);
-            }
-            assert tempView != null;
-            return new Pair(tempTable, tempView);
-        } catch (SqlParseException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public String createInlineQueryFunctionAlt(SqlCreateFunctionDeclaration decl) {
+    public String createInlineQueryFunction(SqlCreateFunctionDeclaration decl, SqlIdentifier name) {
         SqlNode body = decl.getBody();
         if (body == null)
             return null;
 
         StringBuilder builder = new StringBuilder();
         SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-        String tableName = decl.getName().toString() + "_INPUT";
-        String viewName = decl.getName().toString() + "_OUTPUT";
+        String tableName = name.toString() + "_" + decl.getName().toString() + "_INPUT";
+        String viewName = name.toString() + "_" + decl.getName().toString();
         SqlParser parser = SqlParser.create(body.toString().replace("`", ""));
         try {
             // Parse the SQL query
@@ -1096,6 +1044,252 @@ public class CalciteCompiler implements IWritesLogs {
         return sql;
     }
 
+    public List<FrontEndStatement> generateFrontEndStatements(SqlIdentifier name, SqlNode statement,
+            List<SqlNode> inlineQueryNodes) {
+        List<FrontEndStatement> result = new ArrayList<>();
+        StringBuilder builder = new StringBuilder();
+        SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);       
+        try {
+            List<String> viewNames = new ArrayList<String>();
+            List<String> tableNames = new ArrayList<String>();
+            List<SqlCreateFunctionDeclaration> declarations= findFunctionDeclarations(statement, inlineQueryNodes);
+
+            for (SqlCreateFunctionDeclaration decl : declarations)
+            {
+                if (decl == null) {
+                    throw new RuntimeException("Function declaration not found.");
+                }
+
+                String tableName = name.toString() + "_" + decl.getName().toString() + "_INPUT";
+                String viewName = name.toString() + "_" + decl.getName().toString() + "_OUTPUT";
+
+                viewNames.add(viewName);
+                tableNames.add(tableName);
+    
+                SqlParser parser = SqlParser.create(statement.toString().replace("`", ""));
+                try {
+                    SqlNode sqlNode = parser.parseQuery();
+                    if (sqlNode instanceof SqlSelect) {
+                        SqlSelect select = (SqlSelect) sqlNode;
+                        //Create proxy table as the function input
+                        appendInputTableStatement(builder, tableName, select, decl, writer);
+                        //Insert data into proxy table
+                        builder.append(this.createInlineQueryFunction(decl, name));
+                    }
+                } catch (SqlParseException e) {
+                    e.printStackTrace();
+                }
+            }
+            //Create view as the function output
+            appendCreateViewStatement(builder, name, tableNames, viewNames, statement, declarations);                            
+            String sql = builder.toString();
+            System.out.println(sql);
+            SqlNodeList list = parseStatements(sql);
+            for (SqlNode node : list) {
+                result.add(compile(node.toString(), node, null));
+            }
+        } catch (SqlParseException e) {
+            throw new RuntimeException(e);
+        }
+        return result;
+    }
+
+    /**
+     * Finds function declarations within a given SQL statement and a list of inline query nodes.
+     *
+     * @param statement The SQL statement to search within.
+     * @param inlineQueryNodes The list of inline query nodes to check against.
+     * @return A list of SQL function declarations found within the statement.
+     * @throws IllegalArgumentException if the statement is not an instance of SqlSelect.
+     */
+    private List<SqlCreateFunctionDeclaration> findFunctionDeclarations(SqlNode statement, List<SqlNode> inlineQueryNodes) {
+        List<SqlCreateFunctionDeclaration> functionDeclarations = new ArrayList<>();
+
+        // Ensure the statement is of type SqlSelect
+        if (!(statement instanceof SqlSelect)) {
+            throw new IllegalArgumentException("Statement must be an instance of SqlSelect");
+        }
+
+        SqlSelect selectStatement = (SqlSelect) statement;
+
+        // Iterate through each inline query node
+        for (SqlNode inlineNode : inlineQueryNodes) {
+            // Skip nodes that are not instances of SqlCreateFunctionDeclaration
+            if (!(inlineNode instanceof SqlCreateFunctionDeclaration)) {
+                continue;
+            }
+
+            SqlCreateFunctionDeclaration functionDeclaration = (SqlCreateFunctionDeclaration) inlineNode;
+
+            // Iterate through the select list of the SqlSelect statement
+            for (SqlNode selectNode : selectStatement.getSelectList()) {
+                // Check if the select node is a function call
+                if (selectNode instanceof SqlCall) {
+                    SqlCall call = (SqlCall) selectNode;
+                    SqlOperator operator = getOperatorFromCall(call);
+
+                    // Add to the list if the operator matches the function declaration name
+                    if (operator != null && operator.toString().equals(functionDeclaration.getName().toString())) {
+                        functionDeclarations.add(functionDeclaration);
+                    }
+                }
+            }
+        }
+
+        return functionDeclarations;
+    }
+
+    /**
+     * Extracts the operator from a given SQL call. 
+     * If the call is an "AS" clause, retrieves the operator from its first operand.
+     *
+     * @param call The SQL call to extract the operator from.
+     * @return The operator of the call, or null if not found.
+     */
+    private SqlOperator getOperatorFromCall(SqlCall call) {
+        SqlOperator operator = call.getOperator();
+        
+        // Handle "AS" clause by retrieving the operator from the first operand
+        if (operator != null && "AS".equals(operator.toString())) {
+            List<SqlNode> operands = call.getOperandList();
+            if (!operands.isEmpty() && operands.get(0) instanceof SqlCall) {
+                return ((SqlCall) operands.get(0)).getOperator();
+            }
+        }
+        
+        return operator;
+    }
+
+    private void appendInputTableStatement(StringBuilder builder, String tableName, SqlSelect select,
+    SqlCreateFunctionDeclaration decl, SqlWriter writer) {
+        // Start creating the table with the specified table name
+        builder.append("CREATE TABLE ").append(tableName).append(" (");
+
+        // Unparse function parameters to the builder
+        decl.getParameters().unparse(writer, 0, 0);
+
+        // Extract parameters from the SELECT statement
+        List<String> parameterList = extractParameters(select, decl);
+
+        // Continue with the SELECT statement
+        builder.append(") AS\nSELECT DISTINCT ");
+        appendParameterList(builder, parameterList);
+
+        // Complete the SQL query by appending the FROM clause
+        builder.append(" FROM ").append(select.getFrom().toString()).append(";\n\n");
+    }
+
+    private void appendParameterList(StringBuilder builder, List<String> parameterList) {
+        for (int i = 0; i < parameterList.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(parameterList.get(i));
+        }
+    }
+
+    private List<String> extractParameters(SqlSelect select, SqlCreateFunctionDeclaration decl) {
+        List<String> parameterList = new ArrayList<>();
+    
+        // Iterate over the SELECT list nodes
+        for (SqlNode selectNode : select.getSelectList()) {
+            if (selectNode instanceof SqlCall) {
+                SqlCall call = (SqlCall) selectNode;
+                List<SqlNode> operands = call.getOperandList();
+                SqlOperator function = call.getOperator();
+    
+                if (function == null) continue;
+    
+                // Check if the function is an alias (AS)
+                if ("AS".equals(function.toString())) {
+                    SqlCall functionCall = (SqlCall) operands.get(0);
+                    SqlOperator functionOperator = functionCall.getOperator();
+    
+                    if (functionOperator != null && functionOperator.toString().equals(decl.getName().toString())) {
+                        addOperandsToList(parameterList, functionCall.getOperandList());
+                    }
+                } else if (function.toString().equals(decl.getName().toString())) {
+                    addOperandsToList(parameterList, operands);
+                }
+            }
+        }
+        return parameterList;
+    }
+    
+    private void addOperandsToList(List<String> parameterList, List<SqlNode> operands) {
+        for (SqlNode operand : operands) {
+            parameterList.add(operand.toString());
+        }
+    }
+
+    private void appendCreateViewStatement(StringBuilder builder, SqlIdentifier name, List<String> tableNames, List<String> viewNames,
+                                        SqlNode statement, List<SqlCreateFunctionDeclaration> declarations) {
+        builder.append("CREATE VIEW ").append(name).append(" AS\n");
+
+        // Iterate over function declarations
+        for (int i = 0; i < declarations.size(); i++) {
+            SqlCreateFunctionDeclaration decl = declarations.get(i);
+            String tableName = tableNames.get(i);
+            String viewName = viewNames.get(i);
+
+            if (!isAggregate(decl)) {
+                // Append UNION ALL if not the first declaration
+                if (i > 0) {
+                    builder.append("UNION ALL\n");
+                }
+                builder.append("SELECT * FROM ").append(viewName).append("\n");
+            } else {
+                // Handle aggregate functions
+                appendAggregateFunction(builder, statement, decl, tableName, i, name);
+            }
+        }
+
+        // Append FROM clause with table names
+        appendFromClause(builder, tableNames);
+    }
+
+    private void appendAggregateFunction(StringBuilder builder, SqlNode statement, SqlCreateFunctionDeclaration decl, 
+                                        String tableName, int index, SqlIdentifier viewName) {
+        if (index == 0) {
+            builder.append("SELECT ");
+        } else {
+            builder.append(", ");
+        }
+
+        // Parse the SQL statement to extract parameters
+        SqlParser parser = SqlParser.create(statement.toString().replace("`", ""));
+        try {
+            SqlNode sqlNode = parser.parseQuery();
+            if (sqlNode instanceof SqlSelect) {
+                SqlSelect select = (SqlSelect) sqlNode;
+                List<String> parameterList = extractParameters(select, decl);
+
+                for (int k = 0; k < decl.getParameters().size(); k++) {
+                    if (k > 0) {
+                        builder.append(", ");
+                    }
+                    String functionParameter = tableName + "." + decl.getParameters().get(k).toString().split(" ")[0].replace("`", "");
+                    builder.append(functionParameter).append(" AS ").append(parameterList.get(k)).append("_").append(index + 1);
+                }
+
+                builder.append(", (SELECT * FROM ").append(viewName.toString()).append("_").append(decl.getName().toString()).append(")");
+            }
+        } catch (SqlParseException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void appendFromClause(StringBuilder builder, List<String> tableNames) {
+        builder.append("\nFROM ");
+        for (int i = 0; i < tableNames.size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(tableNames.get(i));
+        }
+        builder.append(";\n");
+    }
+    
     @Nullable
     public FrontEndStatement compile(
             String sqlStatement,
@@ -1179,15 +1373,7 @@ public class CalciteCompiler implements IWritesLogs {
                         returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
                 }
                 RexNode bodyExp = null;
-                if (decl.getBody().isA(SqlKind.QUERY)) {
-                    Pair<CreateTableStatement, CreateViewStatement> pair = createInlineQueryFunction(decl);
-                    CreateTableStatement tmpTable = pair.getKey();
-                    CreateViewStatement tmpView = pair.getValue();
-                    if (tmpTable != null)
-                        midendCompiler.compile(tmpTable);
-                    return tmpView;
-                } else
-                    bodyExp = this.createFunction(decl);
+                if (!decl.getBody().isA(SqlKind.QUERY)) bodyExp = this.createFunction(decl);
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
                 return new CreateFunctionStatement(node, sqlStatement, function);

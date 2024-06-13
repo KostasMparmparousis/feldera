@@ -324,35 +324,17 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 this.midend.compile(fe);
             }
 
-            // // Compile all the inline table queries
-            // for (SqlNode node : inlineQueryNodes) {
-            // // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-            // // System.out.println(node.toString() + "\n");
-            // // System.out.println("Gets translated to: \n");
-            // FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment,
-            // this.midend);
-            // if (fe == null)
-            // // error during compilation
-            // continue;
-            // this.midend.compile(fe);
-            // // System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-            // }
-
             // Compile the remaining "CREATE RELATION" statements
             for (SqlNode node : statementsWithInlineQuery) {
-                // System.out.println("**************************************\n");
-                // System.out.println(node.toString() + "\n");
-                // System.out.println("Gets translated to: \n");
                 if (node instanceof SqlLateness)
                     continue;
                 SqlCreateLocalView cv = (SqlCreateLocalView) node;
                 SqlNode query = cv.query;
                 SqlIdentifier viewName = cv.name;
-                List<FrontEndStatement> result = this.generateFrontEndStatements(viewName, query, inlineQueryNodes);
+                List<FrontEndStatement> result = this.frontend.generateFrontEndStatements(viewName, query, inlineQueryNodes);
                 for (FrontEndStatement fe : result) {
                     this.midend.compile(fe);
                 }
-                // System.out.println("**************************************\n");
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
@@ -387,149 +369,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             }
         }
     }
-
-    public List<FrontEndStatement> generateFrontEndStatements(SqlIdentifier name, SqlNode statement,
-            List<SqlNode> inlineQueryNodes) {
-        List<FrontEndStatement> result = new ArrayList<>();
-        try {
-            StringBuilder builder = new StringBuilder();
-
-            SqlCreateFunctionDeclaration decl = findFunctionDeclaration(statement, inlineQueryNodes);
-            if (decl == null) {
-                throw new RuntimeException("Function declaration not found.");
-            }
-
-            String tableName = decl.getName().toString() + "_INPUT";
-            String viewName = decl.getName().toString() + "_OUTPUT";
-
-            SqlParser parser = SqlParser.create(statement.toString().replace("`", ""));
-            try {
-                SqlNode sqlNode = parser.parseQuery();
-                if (sqlNode instanceof SqlSelect) {
-                    SqlSelect select = (SqlSelect) sqlNode;
-                    appendInputTableStatement(builder, tableName, select, decl);
-                    builder.append(this.frontend.createInlineQueryFunctionAlt(decl));
-                    appendCreateViewStatement(builder, name, tableName, viewName, select, decl);
-                    // dropRelations(builder, tableName, viewName);
-                }
-            } catch (SqlParseException e) {
-                e.printStackTrace();
-            }
-
-            String sql = builder.toString();
-            System.out.println(sql);
-            SqlNodeList list = frontend.parseStatements(sql);
-            for (SqlNode node : list) {
-                result.add(frontend.compile(node.toString(), node, null));
-            }
-        } catch (SqlParseException e) {
-            throw new RuntimeException(e);
-        }
-        return result;
-    }
-
-    private SqlCreateFunctionDeclaration findFunctionDeclaration(SqlNode statement, List<SqlNode> inlineQueryNodes) {
-        for (SqlNode functNode : inlineQueryNodes) {
-            SqlCreateFunctionDeclaration tmp = (SqlCreateFunctionDeclaration) functNode;
-            if (statement.toString().contains(tmp.getName().toString())) {
-                return tmp;
-            }
-        }
-        return null;
-    }
-
-    private void appendInputTableStatement(StringBuilder builder, String tableName, SqlSelect select,
-            SqlCreateFunctionDeclaration decl) {
-
-        SqlWriter writer = new SqlPrettyWriter(SqlPrettyWriter.config(), builder);
-        builder.append("CREATE TABLE ").append(tableName).append("(");
-        decl.getParameters().unparse(writer, 0, 0);
-
-        List<String> parameterList = extractParameters(select);
-
-        builder.append(") AS\nSELECT DISTINCT ");
-        for (int i = 0; i < parameterList.size(); i++) {
-            if (i > 0) {
-                builder.append(", ");
-            }
-            builder.append(parameterList.get(i));
-        }
-        builder.append(" FROM ").append(select.getFrom().toString()).append(";\n\n");
-    }
-
-    private void appendInsertStatement(StringBuilder builder, String tableName, SqlSelect select,
-            SqlCreateFunctionDeclaration decl) {
-        builder.append("INSERT INTO ").append(tableName).append("(");
-
-        List<String> parameterList = extractParameters(select);
-        List<String> functionParameters = new ArrayList<>();
-        for (int i = 0; i < parameterList.size(); i++) {
-            if (i > 0) {
-                builder.append(", ");
-            }
-            String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
-            builder.append(functionParameter);
-            functionParameters.add(functionParameter);
-        }
-
-        builder.append(")\nSELECT DISTINCT ");
-        for (int i = 0; i < functionParameters.size(); i++) {
-            if (i > 0) {
-                builder.append(", ");
-            }
-            builder.append(parameterList.get(i));
-        }
-        builder.append(" FROM ").append(select.getFrom().toString()).append(";\n\n");
-    }
-
-    private List<String> extractParameters(SqlSelect select) {
-        List<String> parameterList = new ArrayList<>();
-        for (SqlNode selectNode : select.getSelectList()) {
-            if (selectNode instanceof SqlCall) {
-                SqlCall call = (SqlCall) selectNode;
-                List<SqlNode> operands = call.getOperandList();
-                SqlOperator function = call.getOperator();
-                if (function != null && "AS".equals(function.toString())) {
-                    List<SqlNode> functionOperands = ((SqlCall) operands.get(0)).getOperandList();
-                    for (SqlNode operand : functionOperands) {
-                        parameterList.add(operand.toString());
-                    }
-                } else {
-                    for (SqlNode operand : operands) {
-                        parameterList.add(operand.toString());
-                    }
-                }
-            }
-        }
-        return parameterList;
-    }
-
-    private void appendCreateViewStatement(StringBuilder builder, SqlIdentifier name, String tableName, String viewName,
-            SqlSelect select, SqlCreateFunctionDeclaration decl) {
-        builder.append("CREATE VIEW ").append(name.getSimple()).append(" AS\n");
-
-        if (!this.frontend.isAggregate(decl)) {
-            builder.append("SELECT * FROM ").append(viewName).append(";\n");
-        } else {
-            builder.append("SELECT ");
-            List<String> parameterList = extractParameters(select);
-            for (int i = 0; i < decl.getParameters().size(); i++) {
-                if (i > 0) {
-                    builder.append(", ");
-                }
-                String functionParameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
-                builder.append(functionParameter).append(" AS ").append(parameterList.get(i));
-            }
-            builder.append(", (SELECT * FROM ").append(viewName).append(") AS function_output\n");
-            builder.append("FROM ").append(tableName).append(";\n");
-        }
-    }
-
-    private void dropRelations(StringBuilder builder, String tableName, String viewName) {
-        builder.append("\nDROP TABLE ").append(tableName).append(";\n\n");
-        builder.append("DROP VIEW ").append(viewName).append(";\n");
-    }
-
+ 
     public ObjectNode getIOMetadataAsJson() {
         ObjectMapper mapper = new ObjectMapper();
         ArrayNode inputs = mapper.createArrayNode();
