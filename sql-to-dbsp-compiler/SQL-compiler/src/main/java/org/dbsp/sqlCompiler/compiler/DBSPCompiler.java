@@ -58,6 +58,7 @@ import org.dbsp.sqlCompiler.compiler.frontend.calciteObject.CalciteObject;
 import org.dbsp.sqlCompiler.compiler.frontend.CalciteToDBSPCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.TableContents;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CalciteCompiler;
+import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.QueryExtractor;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CustomFunctions;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateFunctionStatement;
@@ -131,6 +132,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
 
     public final TypeCompiler typeCompiler;
     public boolean hasWarnings;
+    public final QueryExtractor queryExtractor;
 
     /** Circuit produced by the compiler. */
     public @Nullable DBSPCircuit circuit;
@@ -147,6 +149,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         this.circuit = null;
         this.typeCompiler = new TypeCompiler(this);
         this.weightVar = new DBSPTypeUser(CalciteObject.EMPTY, DBSPTypeCode.USER, "Weight", false).var("w");
+        this.queryExtractor = new QueryExtractor(this.frontend);
     }
 
     public boolean hasWarnings() {
@@ -331,7 +334,7 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 SqlCreateLocalView cv = (SqlCreateLocalView) node;
                 SqlNode query = cv.query;
                 SqlIdentifier viewName = cv.name;
-                List<FrontEndStatement> result = this.frontend.generateFrontEndStatements(viewName, query, inlineQueryNodes);
+                List<FrontEndStatement> result = this.queryExtractor.generateFrontEndStatements(viewName, query, inlineQueryNodes);
                 for (FrontEndStatement fe : result) {
                     this.midend.compile(fe);
                 }
