@@ -289,7 +289,6 @@ public class QueryExtractor {
         // Create view as the function output
         appendCreateViewStatement(builder, name, tableNames, viewNames, statement, declarations);
 
-        System.out.println(builder.toString());
         return builder.toString();
     }
     
@@ -337,6 +336,14 @@ public class QueryExtractor {
         return operator;
     }
     
+    private void appendWhereClause(StringBuilder builder, SqlNode whereNode, SqlCreateFunctionDeclaration decl, String tableName) {
+        if (whereNode == null || !(whereNode instanceof SqlBasicCall)) {
+            return;
+        }
+        String whereClause = " WHERE " + extractOperands(whereNode, decl.getParameters(), tableName).replace("`", "");
+        builder.append(whereClause);
+    }
+
     private void appendInputTableStatement(StringBuilder builder, String tableName, SqlSelect select, SqlCreateFunctionDeclaration decl, SqlWriter writer) {
         builder.append("CREATE TABLE ").append(tableName).append(" (");
     
@@ -347,7 +354,9 @@ public class QueryExtractor {
         builder.append(") AS\nSELECT DISTINCT ");
         appendParameterList(builder, parameterList);
     
-        builder.append(" FROM ").append(select.getFrom().toString()).append(";\n\n");
+        builder.append(" FROM ").append(select.getFrom().toString());
+        appendWhereClause(builder, select.getWhere(), decl, tableName);
+        builder.append(";\n\n");
     }
     
     private void appendParameterList(StringBuilder builder, List<String> parameterList) {
@@ -409,7 +418,7 @@ public class QueryExtractor {
                 appendAggregateFunction(builder, statement, decl, tableName, i, name);
             }
         }
-    
+        
         appendFromClause(builder, tableNames);
     }
     
@@ -432,10 +441,10 @@ public class QueryExtractor {
                         builder.append(", ");
                     }
                     String functionParameter = tableName + "." + decl.getParameters().get(k).toString().split(" ")[0].replace("`", "");
-                    builder.append(functionParameter).append(" AS ").append(parameterList.get(k)).append("_").append(index + 1);
+                    builder.append(functionParameter).append(" AS ").append(parameterList.get(k).replace("'", "")).append("_").append(index + 1);
                 }
     
-                builder.append(", (SELECT * FROM ").append(viewName.toString()).append("_").append(decl.getName().toString()).append(")");
+                builder.append(", (SELECT * FROM ").append(viewName.toString()).append("_").append(decl.getName().toString()).append(")");;
             }
         } catch (SqlParseException e) {
             e.printStackTrace();
