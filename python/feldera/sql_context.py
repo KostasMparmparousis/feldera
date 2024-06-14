@@ -4,6 +4,7 @@ import re
 
 from typing import Optional, Dict, Callable
 
+import pandas as pd
 from typing_extensions import Self
 from queue import Queue
 
@@ -18,14 +19,9 @@ from feldera.output_handler import OutputHandler
 from feldera._callback_runner import CallbackRunner, _CallbackRunnerInstruction
 from feldera._helpers import ensure_dataframe_has_columns
 from feldera.formats import JSONFormat, CSVFormat, AvroFormat
-from feldera._helpers import validate_connector_input_format
-from enum import Enum
-
-
-class BuildMode(Enum):
-    CREATE = 1
-    GET = 2
-    GET_OR_CREATE = 3
+from feldera.resources import Resources
+from feldera.enums import BuildMode, CompilationProfile
+from feldera._helpers import validate_connector_input_format, chunk_dataframe
 
 
 def _table_name_from_sql(ddl: str) -> str:
@@ -38,6 +34,17 @@ class SQLContext:
 
     The SQLContext is the main entry point for the Feldera SQL API.
     Abstracts the interaction with the Feldera API and provides a high-level interface for SQL pipelines.
+
+    :param pipeline_name: The name of the pipeline.
+    :param client: The :class:`.FelderaClient` instance to use.
+    :param pipeline_description: The description of the pipeline.
+    :param program_name: The name of the program. Defaults to the pipeline name.
+    :param program_description: The description of the program. Defaults to an empty string.
+    :param storage: Set `True` to use storage with this pipeline. Defaults to False.
+    :param workers: The number of workers to use with this pipeline. Defaults to 8.
+    :param resources: The :class:`.PipelineResourceConfig` for the pipeline. Defaults to None.
+    :param compilation_profile: The compilation profile to use when compiling the program. Defaults to
+        :class:`.CompilationProfile.OPTIMIZED`.
     """
 
     def __init__(
@@ -48,7 +55,9 @@ class SQLContext:
             program_name: str = None,
             program_description: str = None,
             storage: bool = False,
-            workers: int = 8
+            workers: int = 8,
+            resources: Resources = None,
+            compilation_profile: CompilationProfile = CompilationProfile.OPTIMIZED
     ):
         self.build_mode: Optional[BuildMode] = None
         self.is_pipeline_running: bool = False
@@ -64,7 +73,7 @@ class SQLContext:
         # TODO: to be used for schema inference
         self.todo_tables: Dict[str, Optional[SQLTable]] = {}
 
-        self.http_input_buffer: list[Dict[str, dict | list[dict] | str]] = []
+        self.http_input_buffer: list[Dict[str, pd.DataFrame]] = []
 
         # buffer that stores all input connectors to be created
         # this is a Mapping[table_name -> list[Connector]]
@@ -85,6 +94,8 @@ class SQLContext:
         self.program_description: str = program_description or ""
         self.storage: bool = storage
         self.workers: int = workers
+        self.resources: Resources = resources
+        self.compilation_profile: CompilationProfile = compilation_profile
 
     def __build_ddl(self):
         """
@@ -108,7 +119,9 @@ class SQLContext:
 
         program = Program(self.program_name, self.ddl, self.program_description)
 
-        self.client.compile_program(program)
+        self.client.compile_program(program, {
+            "profile": self.compilation_profile.value
+        })
 
         attached_cons = []
 
@@ -125,6 +138,9 @@ class SQLContext:
                 attached_cons.append(attached_con)
 
         config = { 'storage': self.storage, 'workers': self.workers }
+        if self.resources:
+            config["resources"] = self.resources.__dict__
+
         pipeline = Pipeline(
             self.pipeline_name,
             self.program_name,
@@ -158,7 +174,16 @@ class SQLContext:
 
         for input_buffer in self.http_input_buffer:
             for tbl_name, data in input_buffer.items():
-                self.client.push_to_pipeline(self.pipeline_name, tbl_name, "json", data, array=True)
+                for datum in chunk_dataframe(data):
+                    self.client.push_to_pipeline(
+                        self.pipeline_name,
+                        tbl_name,
+                        "json",
+                        datum.to_json(orient='records', date_format='epoch'),
+                        json_flavor='pandas',
+                        array=True,
+                        serialize=False
+                    )
 
         self.http_input_buffer.clear()
 
@@ -258,7 +283,7 @@ class SQLContext:
 
         if tbl:
             # tbl.validate_schema(df)   TODO: something like this would be nice
-            self.http_input_buffer.append({tbl.name: df.to_dict('records')})
+            self.http_input_buffer.append({tbl.name: df})
             return
 
         tbl = self.todo_tables.get(table_name)
@@ -577,6 +602,69 @@ class SQLContext:
         self.resume()
 
         self.__push_http_inputs()
+
+    def wait_for_idle(
+            self,
+            idle_interval_s: float = 5.0,
+            timeout_s: float = 600.0,
+            poll_interval_s: float = 0.2
+    ):
+        """
+        Waits for the pipeline to become idle and then returns.
+
+        Idle is defined as a sufficiently long interval in which the number of
+        input and processed records reported by the pipeline do not change, and
+        they equal each other (thus, all input records present at the pipeline
+        have been processed).
+
+        :param idle_interval_s: Idle interval duration (default is 5.0 seconds).
+        :param timeout_s: Timeout waiting for idle (default is 600.0 seconds).
+        :param poll_interval_s: Polling interval, should be set substantially
+            smaller than the idle interval (default is 0.2 seconds).
+        :raises ValueError: If idle interval is larger than timeout, poll interval
+            is larger than timeout, or poll interval is larger than idle interval.
+        :raises RuntimeError: If the metrics are missing or the timeout was
+            reached.
+        """
+        if idle_interval_s > timeout_s:
+            raise ValueError(f"idle interval ({idle_interval_s}s) cannot be larger than timeout ({timeout_s}s)")
+        if poll_interval_s > timeout_s:
+            raise ValueError(f"poll interval ({poll_interval_s}s) cannot be larger than timeout ({timeout_s}s)")
+        if poll_interval_s > idle_interval_s:
+            raise ValueError(f"poll interval ({poll_interval_s}s) cannot be larger "
+                             f"than idle interval ({idle_interval_s}s)")
+
+        start_time_s = time.monotonic()
+        idle_started_s = None
+        prev = (0, 0)
+        while True:
+            now_s = time.monotonic()
+
+            # Metrics retrieval
+            metrics: dict = self.client.get_pipeline_stats(self.pipeline_name).get("global_metrics")
+            total_input_records: int | None = metrics.get("total_input_records")
+            total_processed_records: int | None = metrics.get("total_processed_records")
+            if total_input_records is None:
+                raise RuntimeError("total_input_records is missing from the pipeline metrics")
+            if total_processed_records is None:
+                raise RuntimeError("total_processed_records is missing from the pipeline metrics")
+
+            # Idle check
+            unchanged = prev[0] == total_input_records and prev[1] == total_processed_records
+            equal = total_input_records == total_processed_records
+            prev = (total_input_records, total_processed_records)
+            if unchanged and equal:
+                if idle_started_s is None:
+                    idle_started_s = now_s
+            else:
+                idle_started_s = None
+            if idle_started_s is not None and now_s - idle_started_s >= idle_interval_s:
+                return
+
+            # Timeout
+            if now_s - start_time_s >= timeout_s:
+                raise RuntimeError(f"waiting for idle reached timeout ({timeout_s}s)")
+            time.sleep(poll_interval_s)
 
     def pause(self):
         """

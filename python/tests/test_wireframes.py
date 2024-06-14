@@ -1,7 +1,7 @@
 import time
 import unittest
 import pandas as pd
-from kafka import KafkaProducer, KafkaConsumer, TopicPartition
+from kafka import KafkaProducer, KafkaConsumer
 from kafka.admin import KafkaAdminClient, NewTopic
 
 from feldera import SQLContext, SQLSchema
@@ -198,7 +198,7 @@ class TestWireframes(unittest.TestCase):
 
         out = sql.listen(VIEW_NAME)
         sql.start()
-        time.sleep(10)
+        sql.wait_for_idle()
         sql.shutdown()
         df = out.to_pandas()
         assert df.shape[0] != 0
@@ -280,6 +280,75 @@ class TestWireframes(unittest.TestCase):
 
         msg = next(consumer)
         assert msg.value is not None
+
+    def test_pipeline_resource_config(self):
+        from feldera.resources import Resources
+
+        config = {
+            "cpu_cores_max": 3,
+            "cpu_cores_min": 2,
+            "memory_mb_max": 500,
+            "memory_mb_min": 300,
+            "storage_mb_max": None,
+            "storage_class": None,
+        }
+
+        resources = Resources(config)
+        name = "test_pipeline_resource_config"
+
+        sql = SQLContext(
+            name,
+            TEST_CLIENT,
+            resources=resources
+        ).get_or_create()
+
+        TBL_NAME = "items"
+        VIEW_NAME = "s"
+
+        sql.register_table(TBL_NAME, SQLSchema({"id": "INT", "name": "STRING"}))
+
+        sql.register_view(VIEW_NAME, f"SELECT * FROM {TBL_NAME}")
+
+        path = "https://feldera-basics-tutorial.s3.amazonaws.com/part.json"
+
+        fmt = JSONFormat().with_update_format(JSONUpdateFormat.InsertDelete).with_array(False)
+        sql.connect_source_url(TBL_NAME, "part", path, fmt)
+
+        out = sql.listen(VIEW_NAME)
+
+        sql.run_to_completion()
+
+        df = out.to_pandas()
+
+        assert df.shape[0] == 3
+
+        assert TEST_CLIENT.get_pipeline(name).config["resources"] == config
+
+    def test_timestamp_pandas(self):
+        sql = SQLContext("test_timestamp_pandas", TEST_CLIENT).get_or_create()
+
+        TBL_NAME = "items"
+        VIEW_NAME = "s"
+
+        # backend doesn't support TIMESTAMP of format: "2024-06-06T18:06:28.443"
+        sql.register_table(TBL_NAME, SQLSchema({"id": "INT", "name": "STRING", "birthdate": "TIMESTAMP"}))
+
+        sql.register_view(VIEW_NAME, f"SELECT * FROM {TBL_NAME}")
+
+        df = pd.DataFrame({"id": [1, 2, 3], "name": ["a", "b", "c"], "birthdate": [
+            pd.Timestamp.now(), pd.Timestamp.now(), pd.Timestamp.now()
+        ]})
+
+        sql.connect_source_pandas(TBL_NAME, df)
+
+        out = sql.listen(VIEW_NAME)
+
+        sql.run_to_completion()
+
+        df = out.to_pandas()
+
+        assert df.shape[0] == 3
+
 
 if __name__ == '__main__':
     unittest.main()
