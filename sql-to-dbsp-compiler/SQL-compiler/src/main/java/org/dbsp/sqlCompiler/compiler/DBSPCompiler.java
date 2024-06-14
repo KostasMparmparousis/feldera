@@ -328,16 +328,20 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             }
 
             // Compile the remaining "CREATE RELATION" statements
-            for (SqlNode node : statementsWithInlineQuery) {
-                if (node instanceof SqlLateness)
+            for (SqlNode statement : statementsWithInlineQuery) {
+                if (statement instanceof SqlLateness)
                     continue;
-                SqlCreateLocalView cv = (SqlCreateLocalView) node;
+                SqlCreateLocalView cv = (SqlCreateLocalView) statement;
                 SqlNode query = cv.query;
                 SqlIdentifier viewName = cv.name;
-                List<FrontEndStatement> result = this.queryExtractor.generateFrontEndStatements(viewName, query, inlineQueryNodes);
-                for (FrontEndStatement fe : result) {
+                SqlNodeList list = frontend.parseStatements(this.queryExtractor.generateStatements(viewName, query, inlineQueryNodes));
+                for (SqlNode node : list) {
+                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                    if (fe == null)
+                        // error during compilation
+                        continue;
                     this.midend.compile(fe);
-                }
+                }                
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
