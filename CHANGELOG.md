@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- [SQL] Support for ARRAY_AGG aggregation function.
+- [SQL] Support for hopping windows using table functions
+  ([#1855](https://github.com/feldera/feldera/pull/1855))
+
+## [0.18.0] - 2024-06-11
+
 - [SQL] CREATE LOCAL VIEW statement to declare views which are not outputs.
   ([#1851](https://github.com/feldera/feldera/pull/1851))
+- [SQL] CREATE LOCAL VIEW statement to declare views which are not outputs.
+  ([#1862](https://github.com/feldera/feldera/pull/1862))
 
 ### Added
 
@@ -22,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Python] Added support for HTTP GET connector via Python SDK
 - [Python] Add support for Avro format
   ([#1836](https://github.com/feldera/feldera/pull/1836))
+- [Python] allow specifying pipeline resource configuration and compilation profile via SQLContext
+  ([#1835](https://github.com/feldera/feldera/pull/1835))
+- [Python] Add function to wait for the pipeline to become idle
+  ([#1841](https://github.com/feldera/feldera/pull/1841))
+- WebConsole: DeltaLake input (#1744) and output (#1584) conenctors
+- WebConsole: Add output buffer configuration UI (#1591)
 
 ### Fixed
 
