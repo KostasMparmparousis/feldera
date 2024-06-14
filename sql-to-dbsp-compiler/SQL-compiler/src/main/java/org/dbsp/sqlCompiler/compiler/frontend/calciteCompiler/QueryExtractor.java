@@ -43,10 +43,7 @@ import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.pretty.SqlPrettyWriter;
 import org.apache.calcite.sql.SqlNodeList;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.FrontEndStatement;
-import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CalciteCompiler;
 import org.apache.calcite.sql.util.SqlBasicVisitor;
-
-
 
 import java.util.List;
 import java.util.ArrayList;
@@ -54,10 +51,6 @@ import java.util.Iterator;
 import java.util.stream.Collectors;
 
 public class QueryExtractor {
-    private final CalciteCompiler frontend;
-    public QueryExtractor(CalciteCompiler frontend) {
-        this.frontend = frontend;
-    }
 
     private String buildSelectStatement(SqlNode sqlNode, String tableName, SqlCreateFunctionDeclaration decl) {
         StringBuilder builder = new StringBuilder();
