@@ -49,8 +49,14 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.stream.Collectors;
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
 
 public class QueryExtractor {
+
+    public QueryExtractor() {
+    }
 
     private String buildSelectStatement(SqlNode sqlNode, String tableName, SqlCreateFunctionDeclaration decl) {
         StringBuilder builder = new StringBuilder();
@@ -146,7 +152,7 @@ public class QueryExtractor {
             boolean appended = false;
             for (SqlNode column : parameters) {
                 String columnName = column.toString().split(" ")[0].replace("`", "");
-                if (columnName.equals(node.toString())) {
+                if (columnName.toLowerCase().equals(node.toString().toLowerCase())) {
                     expression.append(tableName).append(".").append(node.toString());
                     appended = true;
                     break;
@@ -261,6 +267,7 @@ public class QueryExtractor {
         List<SqlCreateFunctionDeclaration> declarations = findFunctionDeclarations(statement, inlineQueryNodes);
 
         for (SqlCreateFunctionDeclaration decl : declarations) {
+            
             if (decl == null) {
                 throw new RuntimeException("Function declaration not found.");
             }
@@ -274,8 +281,10 @@ public class QueryExtractor {
             SqlParser parser = SqlParser.create(statement.toString().replace("`", ""));
             try {
                 SqlNode sqlNode = parser.parseQuery();
+
                 if (sqlNode instanceof SqlSelect) {
                     SqlSelect select = (SqlSelect) sqlNode;
+
                     // Create proxy table as the function input
                     appendInputTableStatement(builder, tableName, select, decl, writer);
                     // Insert data into proxy table
@@ -288,7 +297,6 @@ public class QueryExtractor {
 
         // Create view as the function output
         appendCreateViewStatement(builder, name, tableNames, viewNames, statement, declarations);
-
         return builder.toString();
     }
     
@@ -313,7 +321,7 @@ public class QueryExtractor {
                     SqlCall call = (SqlCall) selectNode;
                     SqlOperator operator = getOperatorFromCall(call);
     
-                    if (operator != null && operator.toString().equals(functionDeclaration.getName().toString())) {
+                    if (operator != null && operator.toString().toLowerCase().equals(functionDeclaration.getName().toString().toLowerCase())) {
                         functionDeclarations.add(functionDeclaration);
                     }
                 }
@@ -350,6 +358,8 @@ public class QueryExtractor {
         decl.getParameters().unparse(writer, 0, 0);
     
         List<String> parameterList = extractParameters(select, decl);
+        //TODO: what do I do when the parameter list is empty?
+     
     
         builder.append(") AS\nSELECT DISTINCT ");
         appendParameterList(builder, parameterList);
@@ -372,25 +382,24 @@ public class QueryExtractor {
         List<String> parameterList = new ArrayList<>();
     
         for (SqlNode selectNode : select.getSelectList()) {
+
             if (selectNode instanceof SqlCall) {
                 SqlCall call = (SqlCall) selectNode;
                 List<SqlNode> operands = call.getOperandList();
                 SqlOperator function = call.getOperator();
-    
                 if (function == null) continue;
     
                 if ("AS".equals(function.toString())) {
                     SqlCall functionCall = (SqlCall) operands.get(0);
                     SqlOperator functionOperator = functionCall.getOperator();
-    
-                    if (functionOperator != null && functionOperator.toString().equals(decl.getName().toString())) {
+                    if (functionOperator != null && functionOperator.toString().toLowerCase().equals(decl.getName().toString().toLowerCase())) {
                         addOperandsToList(parameterList, functionCall.getOperandList());
                     }
-                } else if (function.toString().equals(decl.getName().toString())) {
+                } else if (function.toString().toLowerCase().equals(decl.getName().toString().toLowerCase())) {
                     addOperandsToList(parameterList, operands);
                 }
             }
-        }
+        }        
     
         return parameterList;
     }
