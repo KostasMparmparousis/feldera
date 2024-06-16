@@ -66,6 +66,8 @@ import org.dbsp.sqlCompiler.compiler.frontend.statements.FrontEndStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.IHasSchema;
 import org.dbsp.sqlCompiler.compiler.frontend.parser.SqlCreateLocalView;
 import org.dbsp.sqlCompiler.compiler.frontend.parser.SqlLateness;
+import org.dbsp.sqlCompiler.compiler.frontend.parser.InlineQueryUdfParser;
+import org.dbsp.sqlCompiler.compiler.frontend.parser.FunctionBodyParser;
 import org.dbsp.sqlCompiler.compiler.visitors.outer.CircuitOptimizer;
 import org.dbsp.sqlCompiler.ir.expression.DBSPVariablePath;
 import org.dbsp.sqlCompiler.ir.type.DBSPTypeCode;
@@ -335,7 +337,8 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 SqlCreateLocalView cv = (SqlCreateLocalView) statement;
                 SqlNode query = cv.query;
                 SqlIdentifier viewName = cv.name;
-                SqlNodeList list = frontend.parseStatements(this.queryExtractor.generateStatements(viewName, query, inlineQueryNodes));
+                InlineQueryUdfParser inlineQueryUdfParser = new InlineQueryUdfParser(viewName, query, inlineQueryNodes);
+                SqlNodeList list = frontend.parseStatements(inlineQueryUdfParser.generateStatements(query));
                 for (SqlNode node : list) {
                     FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                     if (fe == null)
