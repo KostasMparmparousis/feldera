@@ -49,9 +49,6 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.stream.Collectors;
-import java.io.BufferedWriter;
-import java.io.FileWriter;
-import java.io.IOException;
 
 public class QueryExtractor {
 
@@ -353,14 +350,19 @@ public class QueryExtractor {
     }
 
     private void appendInputTableStatement(StringBuilder builder, String tableName, SqlSelect select, SqlCreateFunctionDeclaration decl, SqlWriter writer) {
-        builder.append("CREATE TABLE ").append(tableName).append(" (");
+        builder.append("CREATE VIEW ").append(tableName).append("(");
     
-        decl.getParameters().unparse(writer, 0, 0);
+        for (int i = 0; i < decl.getParameters().size(); i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            String parameter = decl.getParameters().get(i).toString().split(" ")[0].replace("`", "");
+            builder.append(parameter);
+        }
     
         List<String> parameterList = extractParameters(select, decl);
         //TODO: what do I do when the parameter list is empty?
      
-    
         builder.append(") AS\nSELECT DISTINCT ");
         appendParameterList(builder, parameterList);
     
