@@ -294,6 +294,7 @@ public class QueryExtractor {
 
         // Create view as the function output
         appendCreateViewStatement(builder, name, tableNames, viewNames, statement, declarations);
+        System.out.println(builder.toString());
         return builder.toString();
     }
     
