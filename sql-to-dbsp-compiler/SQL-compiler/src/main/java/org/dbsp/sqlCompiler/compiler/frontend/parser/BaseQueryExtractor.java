@@ -24,19 +24,16 @@
  package org.dbsp.sqlCompiler.compiler.frontend.parser;
 
 import org.apache.calcite.sql.SqlNode;
-import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlFunction;
 import org.apache.calcite.sql.SqlUnresolvedFunction;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlIdentifier;
-import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlNodeList;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 
 import java.util.List;
-import java.util.ArrayList;
 
 public abstract class BaseQueryExtractor {
     protected StringBuilder builder;
@@ -47,9 +44,9 @@ public abstract class BaseQueryExtractor {
     protected String finalView;
     protected SqlNodeList functionArguments;
 
-    protected BaseQueryExtractor(SqlIdentifier name, SqlNode statement, List<SqlNode> inlineQueryNodes) {
+    protected BaseQueryExtractor(SqlIdentifier name, SqlCreateFunctionDeclaration declaration) {
         this.builder = new StringBuilder();
-        decl = findFunctionDeclarations(statement,inlineQueryNodes).get(0);
+        decl = declaration;
         functionArguments = decl.getParameters();
         finalView = name.toString();
         tableWithFunctionArguments = finalView + "_" + decl.getName().toString() + "_INPUT";
@@ -57,50 +54,12 @@ public abstract class BaseQueryExtractor {
         tempTable = finalView + "_TEMP";
     }
 
-    private List<SqlCreateFunctionDeclaration> findFunctionDeclarations(SqlNode statement, List<SqlNode> inlineQueryNodes) {
-        List<SqlCreateFunctionDeclaration> functionDeclarations = new ArrayList<>();
-    
-        if (!(statement instanceof SqlSelect)) {
-            throw new IllegalArgumentException("Statement must be an instance of SqlSelect");
-        }
-    
-        SqlSelect selectStatement = (SqlSelect) statement;
-    
-        for (SqlNode inlineNode : inlineQueryNodes) {
-            if (!(inlineNode instanceof SqlCreateFunctionDeclaration)) {
-                continue;
-            }
-    
-            SqlCreateFunctionDeclaration functionDeclaration = (SqlCreateFunctionDeclaration) inlineNode;
-    
-            for (SqlNode selectNode : selectStatement.getSelectList()) {
-                if (selectNode instanceof SqlCall) {
-                    SqlCall call = (SqlCall) selectNode;
-                    SqlOperator operator = getOperatorFromCall(call);
-    
-                    if (operator != null && operator.toString().toLowerCase().equals(functionDeclaration.getName().toString().toLowerCase())) {
-                        functionDeclarations.add(functionDeclaration);
-                    }
-                }
-            }
-        }
-    
-        return functionDeclarations;
-    }
-    
-    private SqlOperator getOperatorFromCall(SqlCall call) {
-        SqlOperator operator = call.getOperator();
-    
-        if (operator != null && "AS".equals(operator.toString())) {
-            List<SqlNode> operands = call.getOperandList();
-            if (!operands.isEmpty() && operands.get(0) instanceof SqlCall) {
-                return ((SqlCall) operands.get(0)).getOperator();
-            }
-        }
-    
-        return operator;
-    }
-
+    /*
+     * Parse through a conditional expression
+     * (i.e. `PERSON`.`AGE` = `USERAGE` AND `PERSON`.`PRESENT` = TRUE)
+     * and extract the operands
+     * (i.e. `PERSON`.`AGE`, `USERAGE`, `PERSON`.`PRESENT`, TRUE)
+     */
     protected String extractOperands(SqlNode node) {
         StringBuilder expression = new StringBuilder();
 
@@ -151,8 +110,9 @@ public abstract class BaseQueryExtractor {
         return expression.toString();
     }
 
+    // Determines if the function declaration is an aggregate function based on the return type and the function body
     protected boolean isAggregate() {
-        // Determines if the function declaration is an aggregate function based on the return type and the function body
+        
         return decl.getReturnType() != null;
     }
 

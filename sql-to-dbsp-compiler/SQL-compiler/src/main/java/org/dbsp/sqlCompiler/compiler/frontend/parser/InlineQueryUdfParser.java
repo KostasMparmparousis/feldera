@@ -42,9 +42,9 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
 
     private final FunctionBodyParser functionBodyParser;
 
-    public InlineQueryUdfParser(SqlIdentifier name, SqlNode statement, List<SqlNode> inlineQueryNodes) {
-        super(name, statement, inlineQueryNodes);
-        this.functionBodyParser = new FunctionBodyParser(name, statement, inlineQueryNodes);
+    public InlineQueryUdfParser(SqlIdentifier name, SqlCreateFunctionDeclaration declaration) {
+        super(name, declaration);
+        this.functionBodyParser = new FunctionBodyParser(name, declaration);
     }
 
     public String generateStatements(SqlNode statement) {
@@ -122,9 +122,18 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
         return extractParameters(select, false);
     }
 
+    /*
+     * If fetchAll is true, then all the sql identifiers are extracted from the select list, 
+     * i.e from SELECT `AGE`, `PRESENT`, `COUNTUSERBYAGEANDNAME`(`AGE`, `NAME`) AS `PRESENT_COUNT`
+     * we extract `AGE`, `PRESENT`, `NAME`
+     * 
+     * Else, we extract only the parameters of the function, 
+     * i.e from SELECT `AGE`, `PRESENT`, `COUNTUSERBYNAME`(`NAME`) AS `PRESENT_COUNT`
+     * we extract `NAME`
+     *
+     */
     private List<String> extractParameters(SqlSelect select, boolean fetchAll) {
         List<String> parameterList = new ArrayList<>();
-
         for (SqlNode selectNode : select.getSelectList()) {
             if (fetchAll && selectNode instanceof SqlIdentifier) {
                 parameterList.add(selectNode.toString());

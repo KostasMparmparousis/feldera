@@ -337,7 +337,11 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 SqlCreateLocalView cv = (SqlCreateLocalView) statement;
                 SqlNode query = cv.query;
                 SqlIdentifier viewName = cv.name;
-                InlineQueryUdfParser inlineQueryUdfParser = new InlineQueryUdfParser(viewName, query, inlineQueryNodes);
+                List<SqlCreateFunctionDeclaration> functionCalls = findFunctionCalls(query, inlineQueryNodes);
+                if (functionCalls.size() > 1){
+                    throw new IllegalArgumentException("Multiple inline query function calls found in the same statement.");
+                }
+                InlineQueryUdfParser inlineQueryUdfParser = new InlineQueryUdfParser(viewName, functionCalls.get(0));
                 SqlNodeList list = frontend.parseStatements(inlineQueryUdfParser.generateStatements(query));
                 for (SqlNode node : list) {
                     FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
@@ -346,7 +350,6 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                         continue;
                     this.midend.compile(fe);
                 }
-                String filePath = "filename.txt";
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
@@ -382,6 +385,55 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
         }
     }
  
+    private List<SqlCreateFunctionDeclaration> findFunctionCalls(SqlNode statement, List<SqlNode> inlineQueryNodes) {
+        List<SqlCreateFunctionDeclaration> functionDeclarations = new ArrayList<>();
+    
+        if (!(statement instanceof SqlSelect)) {
+            throw new IllegalArgumentException("Statement must be an instance of SqlSelect");
+        }
+    
+        SqlSelect selectStatement = (SqlSelect) statement;
+    
+        for (SqlNode inlineNode : inlineQueryNodes) {
+            if (!(inlineNode instanceof SqlCreateFunctionDeclaration)) {
+                continue;
+            }
+    
+            SqlCreateFunctionDeclaration functionDeclaration = (SqlCreateFunctionDeclaration) inlineNode;
+    
+            for (SqlNode selectNode : selectStatement.getSelectList()) {
+                if (selectNode instanceof SqlCall) {
+                    SqlCall call = (SqlCall) selectNode;
+                    SqlOperator operator = getOperatorFromCall(call);
+    
+                    if (operator != null && operator.toString().toLowerCase().equals(functionDeclaration.getName().toString().toLowerCase())) {
+                        functionDeclarations.add(functionDeclaration);
+                    }
+                }
+            }
+        }
+    
+        return functionDeclarations;
+    }
+    
+    /*
+     * From an AS SqlCall (i.e `COUNTUSERBYAGEANDNAME`(`AGE`, `NAME`) AS `PRESENT_COUNT`) 
+     * extract the SqlOperator from the first operand
+     * (i.e. `COUNTUSERBYAGEANDNAME`)
+     */
+    private SqlOperator getOperatorFromCall(SqlCall call) {
+        SqlOperator operator = call.getOperator();
+    
+        if (operator != null && "AS".equals(operator.toString())) {
+            List<SqlNode> operands = call.getOperandList();
+            if (!operands.isEmpty() && operands.get(0) instanceof SqlCall) {
+                return ((SqlCall) operands.get(0)).getOperator();
+            }
+        }
+    
+        return operator;
+    }    
+
     public ObjectNode getIOMetadataAsJson() {
         ObjectMapper mapper = new ObjectMapper();
         ArrayNode inputs = mapper.createArrayNode();

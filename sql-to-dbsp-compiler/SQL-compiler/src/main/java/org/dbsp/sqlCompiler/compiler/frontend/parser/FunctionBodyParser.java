@@ -42,8 +42,8 @@ import java.util.List;
 
 public class FunctionBodyParser extends BaseQueryExtractor {
 
-    public FunctionBodyParser(SqlIdentifier name, SqlNode statement, List<SqlNode> inlineQueryNodes) {
-        super(name, statement, inlineQueryNodes);
+    public FunctionBodyParser(SqlIdentifier name, SqlCreateFunctionDeclaration declaration) {
+        super(name, declaration);
     }
 
     public String createInlineQueryFunction() {
@@ -64,7 +64,6 @@ public class FunctionBodyParser extends BaseQueryExtractor {
             }
 
             builder.append(";\n\n");
-            // System.out.println("Function body: " + builder.toString());
             return builder.toString();
         } catch (SqlParseException e) {
             e.printStackTrace();
@@ -137,7 +136,7 @@ public class FunctionBodyParser extends BaseQueryExtractor {
         return "\nHAVING " + extractOperands(havingNode).replace("`", "");
     }
 
-    // Recursive method to process SQL nodes
+    // Method that recursively processes the Function body
     private String processSqlNode(SqlNode sqlNode) {
         StringBuilder result = new StringBuilder();
 
@@ -152,6 +151,7 @@ public class FunctionBodyParser extends BaseQueryExtractor {
         return result.toString();
     }
 
+    //Handle functions that use set operators, such as UNION, INTERSECT, EXCEPT
     private void processSqlBasicCall(SqlBasicCall basicCall, StringBuilder result) {
         SqlOperator operator = basicCall.getOperator();
         if (operator instanceof SqlSetOperator) {
@@ -163,6 +163,7 @@ public class FunctionBodyParser extends BaseQueryExtractor {
         }
     }
 
+    //Handle functions that use the ORDER BY clause
     private void processSqlOrderBy(SqlOrderBy orderBy, StringBuilder result) {
         SqlNode query = orderBy.query;
         if (query instanceof SqlBasicCall) {
