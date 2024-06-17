@@ -112,12 +112,13 @@ public abstract class BaseQueryExtractor {
                 }
             }
             if (!appended) {
-                if (fromNode!=null && node instanceof SqlIdentifier) {
-                    SqlIdentifier identifier = (SqlIdentifier) node;
-                    appendIdentifierNames(expression, identifier, fromNode);
-                } else {
-                    expression.append(node.toString());
-                }
+                expression.append(node.toString());
+                // if (fromNode!=null && node instanceof SqlIdentifier) {
+                //     SqlIdentifier identifier = (SqlIdentifier) node;
+                //     appendIdentifierNames(expression, identifier, fromNode);
+                // } else {
+                //     expression.append(node.toString());
+                // }
             }
         }
         return expression.toString();

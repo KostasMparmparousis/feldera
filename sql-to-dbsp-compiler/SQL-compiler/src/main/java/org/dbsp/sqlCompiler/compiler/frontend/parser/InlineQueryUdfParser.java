@@ -64,6 +64,7 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
         } catch (SqlParseException e) {
             e.printStackTrace();
         }
+        System.out.println(builder.toString());
         return builder.toString();
     }
 

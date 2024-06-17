@@ -85,9 +85,9 @@ public class FunctionBodyParser extends BaseQueryExtractor {
         builderAlt.append(buildSelectList(select.getSelectList()))
                .append("\nFROM ")
                .append(buildFromClause(select.getFrom()))
-               .append(buildWhereClause(select.getWhere(), select.getFrom()))
+               .append(buildWhereClause(select.getWhere(),null))
                .append(buildGroupByClause(select.getGroup()))
-               .append(buildHavingClause(select.getHaving(), select.getFrom()));
+               .append(buildHavingClause(select.getHaving(), null));
     
         return builderAlt.toString();
     }
@@ -105,8 +105,8 @@ public class FunctionBodyParser extends BaseQueryExtractor {
             return join.getLeft().toString().replace("`", "") + " " + join.getJoinType().name() + " JOIN " +
                     join.getRight().toString().replace("`", "") + " ON " + join.getCondition().toString().replace("`", "");
         } else {
-            // return fromNode.toString().replace("`", "");
-            return tempTable;
+            return fromNode.toString().replace("`", "");
+            // return tempTable;
         }
     }
 
