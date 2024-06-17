@@ -31,6 +31,8 @@ import org.apache.calcite.sql.SqlUnresolvedFunction;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlNodeList;
+import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlSelect;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 
 import java.util.List;
@@ -54,13 +56,20 @@ public abstract class BaseQueryExtractor {
         tempTable = finalView + "_TEMP";
     }
 
+
+    protected String extractOperands(SqlNode node) {
+        return extractOperands(node, null);
+    }
     /*
      * Parse through a conditional expression
      * (i.e. `PERSON`.`AGE` = `USERAGE` AND `PERSON`.`PRESENT` = TRUE)
-     * and extract the operands
+     * extract the operands
      * (i.e. `PERSON`.`AGE`, `USERAGE`, `PERSON`.`PRESENT`, TRUE)
+     * and return the expression
+     * 
+     * if fromNode is not null, the tableName gets replaced with the temp View name
      */
-    protected String extractOperands(SqlNode node) {
+    protected String extractOperands(SqlNode node, SqlNode fromNode) {
         StringBuilder expression = new StringBuilder();
 
         if (node instanceof SqlBasicCall) {
@@ -81,7 +90,7 @@ public abstract class BaseQueryExtractor {
                     expression.append("(");
                 }
 
-                expression.append(extractOperands(operands.get(i)));
+                expression.append(extractOperands(operands.get(i), fromNode));
 
                 if (operands.get(i) instanceof SqlBasicCall) {
                     expression.append(")");
@@ -96,24 +105,62 @@ public abstract class BaseQueryExtractor {
             boolean appended = false;
             for (SqlNode column : functionArguments) {
                 String columnName = column.toString().split(" ")[0].replace("`", "");
-                if (columnName.toLowerCase().equals(node.toString().toLowerCase())) {
+                if (columnName.equalsIgnoreCase(node.toString())) {
                     expression.append(tableWithFunctionArguments).append(".").append(node.toString());
                     appended = true;
                     break;
                 }
             }
             if (!appended) {
-                expression.append(node.toString());
+                if (fromNode!=null && node instanceof SqlIdentifier) {
+                    SqlIdentifier identifier = (SqlIdentifier) node;
+                    appendIdentifierNames(expression, identifier, fromNode);
+                } else {
+                    expression.append(node.toString());
+                }
             }
         }
-
         return expression.toString();
+    }
+
+    private void appendIdentifierNames(StringBuilder expression, SqlIdentifier identifier, Object fromNode) {
+        for (String name : identifier.names) {
+            if (name.equalsIgnoreCase(fromNode.toString())) {
+                expression.append(tempTable).append(".");
+            } else {
+                expression.append(name);
+            }
+        }
+    }
+    
+    protected boolean returnsSingleValue(){
+        return (decl.getReturnType() != null || isAggregate());
     }
 
     // Determines if the function declaration is an aggregate function based on the return type and the function body
     protected boolean isAggregate() {
-        
-        return decl.getReturnType() != null;
+        SqlNode body = decl.getBody();
+        if (body == null || decl.getReturnType() == null) {
+            return false;
+        }
+        return containsAggregateFunction(body);
+    }
+
+    private static boolean containsAggregateFunction(SqlNode sqlNode) {
+        if (sqlNode instanceof SqlSelect) {
+            SqlSelect select = (SqlSelect) sqlNode;
+            for (SqlNode selectNode : select.getSelectList()) {
+                if (selectNode instanceof SqlIdentifier) continue;
+                SqlCall call = (SqlCall) selectNode;
+                SqlOperator operator = call.getOperator();
+                List<SqlNode> operands = call.getOperandList();
+                boolean isAggregateFunction = operator instanceof SqlFunction &&
+                    (operator instanceof SqlUnresolvedFunction || operator instanceof SqlAggFunction);
+                if (isAggregateFunction) return true;    
+            }
+            return false;
+        }
+        return false;
     }
 
     protected void appendWhereClause(SqlNode whereNode) {

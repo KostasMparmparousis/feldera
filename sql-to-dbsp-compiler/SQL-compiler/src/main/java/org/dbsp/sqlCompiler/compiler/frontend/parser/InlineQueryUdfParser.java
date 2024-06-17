@@ -59,17 +59,16 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
                 appendProxyTableStatement(select);
                 appendInputTableStatement(select, writer);
                 builder.append(functionBodyParser.createInlineQueryFunction());
-                if (isAggregate()) appendCreateViewStatement(statement);
+                if (returnsSingleValue()) appendCreateViewStatement(select);
             }
         } catch (SqlParseException e) {
             e.printStackTrace();
         }
-        System.out.println(builder.toString());
         return builder.toString();
     }
 
     private void appendProxyTableStatement(SqlSelect select) {
-        builder.append("CREATE VIEW ").append(tempTable).append(" AS SELECT * FROM ").append(select.getFrom().toString());
+        builder.append("\nCREATE VIEW ").append(tempTable).append(" AS SELECT * FROM ").append(select.getFrom().toString());
         appendWhereClause(select.getWhere());
         builder.append(";\n\n");
     }
@@ -93,7 +92,7 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
         builder.append(") AS\nSELECT DISTINCT ");
         appendParameterList(parameterList, viewParam);
     
-        builder.append(" FROM ").append(select.getFrom().toString());
+        builder.append(" FROM ").append(tempTable);
         builder.append(";\n\n");
     }
 
@@ -106,16 +105,30 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
         }
     }
 
-    private void appendCreateViewStatement(SqlNode statement) {
+    private void appendCreateViewStatement(SqlSelect select) {
         builder.append("CREATE VIEW ").append(finalView).append(" AS\n");
-        builder.append("SELECT ").append(extractParameters((SqlSelect) statement, true).stream().collect(Collectors.joining(", ")).replace("`", "")).append(", FUNCTION_OUTPUT\n");
+        builder.append("SELECT ").append(extractParameters(select, true).stream().collect(Collectors.joining(", ")).replace("`", "")).append(", FUNCTION_OUTPUT\n");
         builder.append("FROM ").append(tempTable).append("\n");
-        builder.append("JOIN ").append(intermediateView).append(" ON ");
-        builder.append(appendOnClause(statement));
+        builder.append("JOIN ").append(intermediateView).append("\nON ");
+        builder.append(appendOnClause(select));
     }
     
-    private String appendOnClause(SqlNode whereNode) {
-        return tempTable + ".AGE = " + intermediateView + ".USERAGE;";
+    private String appendOnClause(SqlSelect select) {
+        StringBuilder builderAlt = new StringBuilder();
+        List<String> parameterList = extractParameters(select);
+        List<String> viewParam = new ArrayList<String>();
+        for (int i = 0; i < functionArguments.size(); i++) {
+            String parameter = functionArguments.get(i).toString().split(" ")[0].replace("`", "");
+            viewParam.add(parameter);
+        }
+
+        for (int i = 0; i < parameterList.size(); i++) {
+            if (i > 0) {
+                builderAlt.append(" AND ");
+            }
+            builderAlt.append(tempTable + "." + parameterList.get(i) + " = " + intermediateView + "." + viewParam.get(i));
+        }
+        return builderAlt.toString();
     }
 
     private List<String> extractParameters(SqlSelect select) {
@@ -148,10 +161,10 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
                 if ("AS".equals(function.toString())) {
                     SqlCall functionCall = (SqlCall) operands.get(0);
                     SqlOperator functionOperator = functionCall.getOperator();
-                    if (functionOperator != null && functionOperator.toString().toLowerCase().equals(decl.getName().toString().toLowerCase())) {
+                    if (functionOperator != null && functionOperator.toString().equalsIgnoreCase(decl.getName().toString())) {
                         addOperandsToList(parameterList, functionCall.getOperandList());
                     }
-                } else if (function.toString().toLowerCase().equals(decl.getName().toString().toLowerCase())) {
+                } else if (function.toString().equalsIgnoreCase(decl.getName().toString())) {
                     addOperandsToList(parameterList, operands);
                 }
             }

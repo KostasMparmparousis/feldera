@@ -51,7 +51,7 @@ public class FunctionBodyParser extends BaseQueryExtractor {
             SqlParser parser = SqlParser.create(decl.getBody().toString().replace("`", ""));
             SqlNode sqlNode = parser.parseQuery();
 
-            if (isAggregate()) {
+            if (returnsSingleValue()) {
                 builder.append("CREATE VIEW ").append(intermediateView).append(" AS\n");
             } else {
                 builder.append("CREATE VIEW ").append(finalView).append(" AS\n");
@@ -75,7 +75,7 @@ public class FunctionBodyParser extends BaseQueryExtractor {
         StringBuilder builderAlt = new StringBuilder("SELECT ");
         SqlSelect select = (SqlSelect) sqlNode;
 
-        if (isAggregate()) {
+        if (returnsSingleValue()) {
             String groupByClause = decl.getParameters().stream() 
                                    .map(parameter -> parameter.toString().split(" ")[0].replace("`", ""))
                                    .collect(Collectors.joining(", "));
@@ -85,9 +85,9 @@ public class FunctionBodyParser extends BaseQueryExtractor {
         builderAlt.append(buildSelectList(select.getSelectList()))
                .append("\nFROM ")
                .append(buildFromClause(select.getFrom()))
-               .append(buildWhereClause(select.getWhere()))
+               .append(buildWhereClause(select.getWhere(), select.getFrom()))
                .append(buildGroupByClause(select.getGroup()))
-               .append(buildHavingClause(select.getHaving()));
+               .append(buildHavingClause(select.getHaving(), select.getFrom()));
     
         return builderAlt.toString();
     }
@@ -105,15 +105,16 @@ public class FunctionBodyParser extends BaseQueryExtractor {
             return join.getLeft().toString().replace("`", "") + " " + join.getJoinType().name() + " JOIN " +
                     join.getRight().toString().replace("`", "") + " ON " + join.getCondition().toString().replace("`", "");
         } else {
-            return fromNode.toString().replace("`", "");
+            // return fromNode.toString().replace("`", "");
+            return tempTable;
         }
     }
 
-    protected String buildWhereClause(SqlNode whereNode) {
+    protected String buildWhereClause(SqlNode whereNode, SqlNode fromNode) {
         if (whereNode == null || !(whereNode instanceof SqlBasicCall)) {
             return "";
         }
-        String whereClause = "\nWHERE " + extractOperands(whereNode).replace("`", "");
+        String whereClause = "\nWHERE " + extractOperands(whereNode, fromNode).replace("`", "");
         if (!functionArguments.isEmpty()) {
             whereClause = ", " + tableWithFunctionArguments + whereClause;
         }
@@ -129,11 +130,11 @@ public class FunctionBodyParser extends BaseQueryExtractor {
                 .collect(Collectors.joining(", "));
     }
 
-    protected String buildHavingClause(SqlNode havingNode) {
+    protected String buildHavingClause(SqlNode havingNode, SqlNode fromNode) {
         if (havingNode == null || !(havingNode instanceof SqlBasicCall)) {
             return "";
         }
-        return "\nHAVING " + extractOperands(havingNode).replace("`", "");
+        return "\nHAVING " + extractOperands(havingNode, fromNode).replace("`", "");
     }
 
     // Method that recursively processes the Function body
