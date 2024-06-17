@@ -44,6 +44,7 @@ public abstract class BaseQueryExtractor {
     protected String tableWithFunctionArguments;
     protected String intermediateView;
     protected String finalView;
+    protected String alias;
     protected SqlNodeList functionArguments;
 
     protected BaseQueryExtractor(SqlIdentifier name, SqlCreateFunctionDeclaration declaration) {
@@ -54,6 +55,7 @@ public abstract class BaseQueryExtractor {
         tableWithFunctionArguments = finalView + "_" + decl.getName().toString() + "_INPUT";
         intermediateView = finalView + "_" + decl.getName().toString();
         tempTable = finalView + "_TEMP";
+        alias = "FUNCTION_OUTPUT";
     }
 
 

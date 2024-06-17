@@ -27,6 +27,7 @@ import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlBasicCall;
 import org.apache.calcite.sql.parser.SqlParser;
 import org.apache.calcite.sql.parser.SqlParseException;
 import org.apache.calcite.sql.SqlCall;
@@ -34,6 +35,8 @@ import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.pretty.SqlPrettyWriter;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 
+import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.stream.Collectors;
@@ -41,10 +44,12 @@ import java.util.stream.Collectors;
 public class InlineQueryUdfParser extends BaseQueryExtractor {
 
     private final FunctionBodyParser functionBodyParser;
+    private final HashMap<String, String> aliases;
 
     public InlineQueryUdfParser(SqlIdentifier name, SqlCreateFunctionDeclaration declaration) {
         super(name, declaration);
         this.functionBodyParser = new FunctionBodyParser(name, declaration);
+        this.aliases= new HashMap<>();
     }
 
     public String generateStatements(SqlNode statement) {
@@ -56,15 +61,20 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
 
             if (sqlNode instanceof SqlSelect) {
                 SqlSelect select = (SqlSelect) sqlNode;
-                appendProxyTableStatement(select);
-                appendInputTableStatement(select, writer);
-                builder.append(functionBodyParser.createInlineQueryFunction());
-                if (returnsSingleValue()) appendCreateViewStatement(select);
+                if (decl.getParameters().size() == 0) {
+                    appendProxyTableStatement(select);
+                    builder.append(functionBodyParser.createInlineQueryFunction());
+                }
+                else{
+                    appendProxyTableStatement(select);
+                    appendInputTableStatement(select, writer);
+                    builder.append(functionBodyParser.createInlineQueryFunction());
+                    if (returnsSingleValue()) appendCreateViewStatement(select);
+                }
             }
         } catch (SqlParseException e) {
             e.printStackTrace();
         }
-        System.out.println(builder.toString());
         return builder.toString();
     }
 
@@ -88,7 +98,6 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
         }
     
         List<String> parameterList = extractParameters(select);
-        //TODO: what do I do when the parameter list is empty?
      
         builder.append(") AS\nSELECT DISTINCT ");
         appendParameterList(parameterList, viewParam);
@@ -108,10 +117,15 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
 
     private void appendCreateViewStatement(SqlSelect select) {
         builder.append("CREATE VIEW ").append(finalView).append(" AS\n");
-        builder.append("SELECT ").append(extractParameters(select, true).stream().collect(Collectors.joining(", ")).replace("`", "")).append(", FUNCTION_OUTPUT\n");
+        builder.append("SELECT ").append(extractParameters(select, true).stream().collect(Collectors.joining(", ")).replace("`", ""));
+        if (select.getSelectList().size() > 1) builder.append(", ");
+        builder.append(alias + "\n");
         builder.append("FROM ").append(tempTable).append("\n");
         builder.append("JOIN ").append(intermediateView).append("\nON ");
         builder.append(appendOnClause(select));
+        builder.append(appendHavingClause(select));
+        builder.append(";\n");
+        
     }
     
     private String appendOnClause(SqlSelect select) {
@@ -136,6 +150,17 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
         return extractParameters(select, false);
     }
 
+    private String appendHavingClause(SqlSelect select) {
+        StringBuilder builderAlt = new StringBuilder();
+        if (select.getHaving() != null) {
+            SqlNode havingNode = select.getHaving();
+            if (!(havingNode instanceof SqlBasicCall)) return "";
+            builderAlt.append("\nWHERE ").append(extractOperands(havingNode, null));
+            return builderAlt.toString();
+        }
+        return "";
+    }
+
     /*
      * If fetchAll is true, then all the sql identifiers are extracted from the select list, 
      * i.e from SELECT `AGE`, `PRESENT`, `COUNTUSERBYAGEANDNAME`(`AGE`, `NAME`) AS `PRESENT_COUNT`
@@ -149,21 +174,39 @@ public class InlineQueryUdfParser extends BaseQueryExtractor {
     private List<String> extractParameters(SqlSelect select, boolean fetchAll) {
         List<String> parameterList = new ArrayList<>();
         for (SqlNode selectNode : select.getSelectList()) {
-            if (fetchAll && selectNode instanceof SqlIdentifier) {
-                parameterList.add(selectNode.toString());
+            if (fetchAll){
+                if (selectNode instanceof SqlIdentifier) {
+                    parameterList.add(selectNode.toString());
+                }
+                else if (selectNode instanceof SqlCall) {
+                    SqlCall functionCall = (SqlCall) selectNode;
+                    SqlOperator functionOperator = functionCall.getOperator();
+                    List<SqlNode> functionOperands = functionCall.getOperandList();
+                    if (functionOperator != null && functionOperator.toString().equalsIgnoreCase("AS")) {
+                        if (!(functionOperands.get(0) instanceof SqlCall)) parameterList.add(functionCall.toString().replace("`", ""));
+                    }
+                }
                 continue;
             }
+            
             if (selectNode instanceof SqlCall) {
                 SqlCall call = (SqlCall) selectNode;
                 List<SqlNode> operands = call.getOperandList();
                 SqlOperator function = call.getOperator();
                 if (function == null) continue;
-
+                
                 if ("AS".equals(function.toString())) {
-                    SqlCall functionCall = (SqlCall) operands.get(0);
-                    SqlOperator functionOperator = functionCall.getOperator();
-                    if (functionOperator != null && functionOperator.toString().equalsIgnoreCase(decl.getName().toString())) {
-                        addOperandsToList(parameterList, functionCall.getOperandList());
+                    if (operands.get(0) instanceof SqlIdentifier) {
+                        aliases.put(operands.get(0).toString(), operands.get(1).toString());
+                    }
+                    else{
+                        SqlCall functionCall = (SqlCall) operands.get(0);
+                        SqlOperator functionOperator = functionCall.getOperator();
+                        alias = operands.get(1).toString();
+                        functionBodyParser.setAlias(alias);
+                        if (functionOperator != null && functionOperator.toString().equalsIgnoreCase(decl.getName().toString())) {
+                            addOperandsToList(parameterList, functionCall.getOperandList());
+                        }
                     }
                 } else if (function.toString().equalsIgnoreCase(decl.getName().toString())) {
                     addOperandsToList(parameterList, operands);

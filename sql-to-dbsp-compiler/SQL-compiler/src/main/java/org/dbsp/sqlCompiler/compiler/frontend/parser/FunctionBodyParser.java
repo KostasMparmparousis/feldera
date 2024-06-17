@@ -95,7 +95,7 @@ public class FunctionBodyParser extends BaseQueryExtractor {
     private String buildSelectList(List<SqlNode> selectList) {
         return selectList.stream()
                 .map(node -> node.toString().replace("`", "") + 
-                    (selectList.size() == 1 && !node.toString().equals("*") ? " AS FUNCTION_OUTPUT" : ""))
+                    (selectList.size() == 1 && !node.toString().equals("*") ? " AS " + alias : ""))
                 .collect(Collectors.joining(", "));
     }
 
@@ -194,5 +194,9 @@ public class FunctionBodyParser extends BaseQueryExtractor {
     public void setFunctionDeclaration(SqlCreateFunctionDeclaration decl) {
         this.decl = decl;
         this.functionArguments = decl.getParameters();
+    }
+
+    public void setAlias(String alias) {
+        this.alias = alias;
     }
 }
