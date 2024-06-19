@@ -148,6 +148,8 @@ import org.dbsp.sqlCompiler.ir.expression.DBSPUnsignedUnwrapExpression;
 import org.dbsp.sqlCompiler.ir.expression.DBSPUnsignedWrapExpression;
 import org.dbsp.sqlCompiler.ir.expression.DBSPVariablePath;
 import org.dbsp.sqlCompiler.ir.expression.literal.DBSPBoolLiteral;
+import org.dbsp.sqlCompiler.ir.expression.literal.DBSPRealLiteral;
+import org.dbsp.sqlCompiler.ir.expression.literal.DBSPDecimalLiteral;
 import org.dbsp.sqlCompiler.ir.expression.literal.DBSPI32Literal;
 import org.dbsp.sqlCompiler.ir.expression.literal.DBSPLiteral;
 import org.dbsp.sqlCompiler.ir.expression.literal.DBSPZSetLiteral;
@@ -182,6 +184,7 @@ import org.dbsp.sqlCompiler.ir.type.user.DBSPTypeVec;
 import org.dbsp.sqlCompiler.ir.type.user.DBSPTypeZSet;
 import org.dbsp.sqlCompiler.ir.expression.literal.DBSPIntLiteral;
 import org.dbsp.sqlCompiler.ir.expression.literal.DBSPI64Literal;
+import org.dbsp.sqlCompiler.ir.expression.literal.DBSPDoubleLiteral;
 import org.dbsp.util.ICastable;
 import org.dbsp.util.IWritesLogs;
 import org.dbsp.util.IdShuffle;
@@ -192,6 +195,8 @@ import org.dbsp.sqlCompiler.ir.type.DBSPTypeCode;
 import org.apache.calcite.schema.ColumnStrategy;
 
 import javax.annotation.Nullable;
+
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -2188,43 +2193,6 @@ public class CalciteToDBSPCompiler extends RelVisitor
         return o;
     }
 
-    protected String extractOperands(SqlNode node) {
-        StringBuilder expression = new StringBuilder();
-
-        if (node instanceof SqlBasicCall) {
-            SqlBasicCall call = (SqlBasicCall) node;
-            SqlOperator operator = call.getOperator();
-            List<SqlNode> operands = call.getOperandList();
-            boolean isAggregateFunction = operator instanceof SqlFunction &&
-                    (operator instanceof SqlUnresolvedFunction || operator instanceof SqlAggFunction);
-
-            // Handle each operand recursively
-            for (int i = 0; i < operands.size(); i++) {
-                if (i > 0 && !isAggregateFunction) {
-                    // Add operator between operands
-                    expression.append(" ").append(operator).append(" ");
-                }
-
-                if (operands.get(i) instanceof SqlBasicCall) {
-                    expression.append("(");
-                }
-
-                expression.append(extractOperands(operands.get(i)));
-
-                if (operands.get(i) instanceof SqlBasicCall) {
-                    expression.append(")");
-                }
-            }
-
-            if (isAggregateFunction) {
-                expression.insert(0, operator + "(").append(")");
-            }
-        } else {
-            expression.append(node.toString());
-        }
-        return expression.toString();
-    }
-    
     DBSPNode compileModifyTable(TableModifyStatement modify) {
         // The type of the data must be extracted from the modified table
         boolean isInsert = modify.insert;
@@ -2261,6 +2229,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
             CalciteObject node = CalciteObject.create(modify.rel);
             LogicalAggregate agg = (LogicalAggregate) modify.rel;
             ColumnStrategy strategy = null;
+            
             result = null;
             int columnIndex = 0;
 
@@ -2269,6 +2238,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
                 List<String> name = scan.getTable().getQualifiedName();
                 String sourceTable = name.get(name.size() - 1);
                 DBSPZSetLiteral tableContents = this.tableContents.getTableContents(sourceTable);
+                RelDataType type = null;
 
                 try{
                     SqlParser parser = SqlParser.create(modify.data.toString().replace("`", ""));
@@ -2280,38 +2250,36 @@ public class CalciteToDBSPCompiler extends RelVisitor
                             isStar = true;
                         }
 
-                        // If not selecting all columns, find the index of the column of interest
-                        if (!isStar) {
-                            List<SqlNode> selectItems = select.getSelectList();
-                            SqlNode fromNode = select.getFrom();
-                            String fromString = fromNode.toString().replace("`", "" );
-                            String alias = fromString.substring(fromString.lastIndexOf(" ") + 1);
+                        List<SqlNode> selectItems = select.getSelectList();
+                        SqlNode fromNode = select.getFrom();
+                        String fromString = fromNode.toString().replace("`", "" );
+                        String alias = fromString.substring(fromString.lastIndexOf(" ") + 1);
 
-                            CreateTableStatement source = this.tableContents.getTableDefinition(alias);
-                            for (int i=0; i < source.columns.size(); i++){
-                                String columnName = "COUNT(" + alias + "." + source.columns.get(i).getName() + ")";
-                                boolean found = false;
-                                for (int j=0; j < selectItems.size(); j++){
-                                    SqlNode item = selectItems.get(j);
-                                    String itemString = extractOperands(item);
-                                    if (itemString.equalsIgnoreCase(columnName)){
-                                        columnIndex = i;
-                                        found = true;
-                                        break;
-                                    }
+                        CreateTableStatement source = this.tableContents.getTableDefinition(alias);
+                        for (int i=0; i < source.columns.size(); i++){
+                            String columnName = "COUNT(" + alias + "." + source.columns.get(i).getName() + ")";
+                            boolean found = false;
+                            for (int j=0; j < selectItems.size(); j++){
+                                SqlNode item = selectItems.get(j);
+                                String itemString = item.toString().replace("`", "");
+                                if (itemString.equalsIgnoreCase(columnName)){
+                                    columnIndex = i;
+                                    found = true;
+                                    break;
                                 }
-                                if (found) break;
                             }
-                            strategy = scan.getTable().getColumnStrategies().get(columnIndex);
+                            if (found) break;
                         }
-                        if (isStar) result = handleCount(tableContents, columnIndex, strategy);
+                        strategy = scan.getTable().getColumnStrategies().get(columnIndex);
+                        type = scan.getRowType().getFieldList().get(columnIndex).getType();
+                                                
+                        if (isStar) result = handleCount(tableContents, columnIndex, strategy, type.toString());
                         else result = handleDistinct(tableContents, columnIndex);
                     }
                 }
                 catch (SqlParseException e){
-                    System.out.println("Error parsing SQL query: " + e.getMessage());
+                    throw new InternalCompilerError("Error parsing SQL query: " + e.getMessage());
                 }
-                System.out.println(result.toString());
                 return result;
             }
 
@@ -2323,6 +2291,8 @@ public class CalciteToDBSPCompiler extends RelVisitor
                 RexInputRef columnRef = (RexInputRef) projectExpressions.get(0);
                 String columnName = columnRef.getName();
                 columnIndex = columnRef.getIndex();
+                strategy = project.getInput().getTable().getColumnStrategies().get(columnIndex);
+                RelDataType type = project.getInput().getRowType().getFieldList().get(columnIndex).getType();
                 // TODO: skip schema identifier, but also check if it is there
                 String sourceTable = project.getInput().getTable().getQualifiedName().get(1);
                 DBSPZSetLiteral tableContents = this.tableContents.getTableContents(sourceTable);
@@ -2331,12 +2301,11 @@ public class CalciteToDBSPCompiler extends RelVisitor
                     SqlNode sqlNode = parser.parseQuery();
                     if (sqlNode instanceof SqlSelect){
                         SqlSelect select = (SqlSelect) sqlNode;
-                        result = handleAggregations(select, tableContents, columnIndex, node);
-                        if (result != null) System.out.println(result.toString());
+                        result = handleAggregations(select, tableContents, columnIndex, node, strategy, type.toString());
                     }
                 }
                 catch (SqlParseException e){
-                    System.out.println("Error parsing SQL query: " + e.getMessage());
+                    throw new InternalCompilerError("Error parsing SQL query: " + e.getMessage());
                 }
                 
             } else {
@@ -2352,7 +2321,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
         return result;
     }
 
-    private static DBSPZSetLiteral handleAggregations(SqlSelect select, DBSPZSetLiteral tableContents, int columnIndex, CalciteObject object) {
+    private static DBSPZSetLiteral handleAggregations(SqlSelect select, DBSPZSetLiteral tableContents, int columnIndex, CalciteObject object, ColumnStrategy strategy, String type) {
         List<SqlNode> selectList = select.getSelectList().getList();
         if (select.isDistinct()) {
             return handleDistinct(tableContents, columnIndex);
@@ -2367,13 +2336,13 @@ public class CalciteToDBSPCompiler extends RelVisitor
                     case "COUNT":
                         return handleDistinct(tableContents, columnIndex);
                     case "AVG":
-                        return handleAvg(tableContents, columnIndex);
+                        return handleAvg(tableContents, columnIndex, strategy, type);
                     case "MIN":
                         return handleMin(tableContents, columnIndex);
                     case "MAX":
                         return handleMax(tableContents, columnIndex);
                     case "SUM":
-                        return handleSum(tableContents, columnIndex);
+                        return handleSum(tableContents, columnIndex, strategy, type);
                     // Add more cases for other aggregation functions
                     default:
                         System.out.println("call: " + call.toString());
@@ -2385,7 +2354,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
         return null;
     }
 
-    private static DBSPZSetLiteral handleCount(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy) {
+    private static DBSPZSetLiteral handleCount(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy, String type) {
         // Extract distinct values manually
         long nonNullCount = 0;
 
@@ -2402,26 +2371,20 @@ public class CalciteToDBSPCompiler extends RelVisitor
             }
         }
 
+        boolean nullable = true;
         if (strategy == ColumnStrategy.NOT_NULLABLE) {
+            nullable = false;
             nonNullCount = tableContents.data.size();
-            DBSPI64Literal countValue = new DBSPI64Literal(nonNullCount);
-            DBSPTupleExpression countTuple = new DBSPTupleExpression(countValue);
-            DBSPZSetLiteral countResult = new DBSPZSetLiteral(countTuple.type);
-            countResult.add(countTuple);
-            return countResult;
         }
-        else{
-            DBSPI64Literal countValue = new DBSPI64Literal();
-            DBSPI64Literal value = new DBSPI64Literal(nonNullCount);
-            DBSPTupleExpression countTuple = new DBSPTupleExpression(countValue);
-            DBSPTupleExpression valueTuple = new DBSPTupleExpression(value);
-            DBSPZSetLiteral countResult = new DBSPZSetLiteral(countTuple.type);
-            countResult.add(valueTuple);
-            return countResult;
-        }
+
+        DBSPI64Literal countValue = new DBSPI64Literal(nonNullCount, nullable);
+        DBSPTupleExpression countTuple = new DBSPTupleExpression(countValue);
+        DBSPZSetLiteral countResult = new DBSPZSetLiteral(countTuple.type);
+        countResult.add(countTuple);
+        return countResult;
     }
 
-    private static DBSPZSetLiteral handleAvg(DBSPZSetLiteral tableContents, int columnIndex) {
+    private static DBSPZSetLiteral handleAvg(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy, String type) {
         DBSPExpression resultElement = null;
         Double resultValue = 0.0;
         int count = 0;
@@ -2447,14 +2410,32 @@ public class CalciteToDBSPCompiler extends RelVisitor
             count++;
         }
         double avg = resultValue / count;
-        System.out.println("Handling AVG function: " + avg);
-        return null;
+
+        boolean nullable = true;
+        if (strategy == ColumnStrategy.NOT_NULLABLE) {
+            nullable = false;
+        }
+
+        DBSPExpression avgValue;
+        switch (type.toUpperCase()) {
+            case "REAL":
+                avgValue = new DBSPRealLiteral((float) avg, nullable);
+                break;
+            default:
+                avgValue = new DBSPDoubleLiteral(avg, nullable);
+                break;
+        }
+    
+        DBSPTupleExpression avgTuple = new DBSPTupleExpression(avgValue);
+        DBSPZSetLiteral avgResult = new DBSPZSetLiteral(avgTuple.type);
+        avgResult.add(avgTuple);
+
+        return avgResult;
     }
 
-    private static DBSPZSetLiteral handleSum(DBSPZSetLiteral tableContents, int columnIndex) {
+    private static DBSPZSetLiteral handleSum(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy, String type) {
         DBSPExpression resultElement = null;
-        Double resultValue = 0.0;
-        int count = 0;
+        long sum = 0;
 
         for (DBSPExpression expression : tableContents.data.keySet()) {
             if (!(expression instanceof DBSPTupleExpression)) {
@@ -2473,10 +2454,18 @@ public class CalciteToDBSPCompiler extends RelVisitor
                 throw new InternalCompilerError("Failed to extract numeric value from " + value);
             }
     
-            resultValue += currentValue;
+            sum += currentValue;
         }
-        System.out.println("Handling SUM function: " + resultValue);
-        return null;
+        boolean nullable = true;
+        if (strategy == ColumnStrategy.NOT_NULLABLE) {
+            nullable = false;
+        }
+
+        DBSPI64Literal sumValue = new DBSPI64Literal(sum, nullable);
+        DBSPTupleExpression sumTuple = new DBSPTupleExpression(sumValue);
+        DBSPZSetLiteral sumResult = new DBSPZSetLiteral(sumTuple.type);
+        sumResult.add(sumTuple);
+        return sumResult;
     }
     
     private static DBSPZSetLiteral handleMin(DBSPZSetLiteral tableContents, int columnIndex) {
