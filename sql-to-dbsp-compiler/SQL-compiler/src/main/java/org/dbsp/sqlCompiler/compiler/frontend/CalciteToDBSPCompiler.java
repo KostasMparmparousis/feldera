@@ -2229,8 +2229,6 @@ public class CalciteToDBSPCompiler extends RelVisitor
             CalciteObject node = CalciteObject.create(modify.rel);
             LogicalAggregate agg = (LogicalAggregate) modify.rel;
             ColumnStrategy strategy = null;
-            
-            result = null;
             int columnIndex = 0;
 
             if (agg.getInput() instanceof LogicalTableScan) {
@@ -2561,7 +2559,6 @@ public class CalciteToDBSPCompiler extends RelVisitor
         }    
         return countResult;
     }
-    
 
     @Nullable
     DBSPNode compileCreateType(CreateTypeStatement stat) {
