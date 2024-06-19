@@ -2233,81 +2233,10 @@ public class CalciteToDBSPCompiler extends RelVisitor
             result = null;
             int columnIndex = 0;
 
-            if (agg.getInput() instanceof LogicalTableScan){
-                LogicalTableScan scan = (LogicalTableScan) modify.rel.getInput(0);
-                List<String> name = scan.getTable().getQualifiedName();
-                String sourceTable = name.get(name.size() - 1);
-                DBSPZSetLiteral tableContents = this.tableContents.getTableContents(sourceTable);
-                RelDataType type = null;
-
-                try{
-                    SqlParser parser = SqlParser.create(modify.data.toString().replace("`", ""));
-                    SqlNode sqlNode = parser.parseQuery();
-                    if (sqlNode instanceof SqlSelect){
-                        SqlSelect select = (SqlSelect) sqlNode;
-                        boolean isStar = false;
-                        if (select.getSelectList().size() == 1 && select.getSelectList().get(0).toString().equals("COUNT(*)")) {
-                            isStar = true;
-                        }
-
-                        List<SqlNode> selectItems = select.getSelectList();
-                        SqlNode fromNode = select.getFrom();
-                        String fromString = fromNode.toString().replace("`", "" );
-                        String alias = fromString.substring(fromString.lastIndexOf(" ") + 1);
-
-                        CreateTableStatement source = this.tableContents.getTableDefinition(alias);
-                        for (int i=0; i < source.columns.size(); i++){
-                            String columnName = "COUNT(" + alias + "." + source.columns.get(i).getName() + ")";
-                            boolean found = false;
-                            for (int j=0; j < selectItems.size(); j++){
-                                SqlNode item = selectItems.get(j);
-                                String itemString = item.toString().replace("`", "");
-                                if (itemString.equalsIgnoreCase(columnName)){
-                                    columnIndex = i;
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (found) break;
-                        }
-                        strategy = scan.getTable().getColumnStrategies().get(columnIndex);
-                        type = scan.getRowType().getFieldList().get(columnIndex).getType();
-                                                
-                        if (isStar) result = handleCount(tableContents, columnIndex, strategy, type.toString());
-                        else result = handleDistinct(tableContents, columnIndex);
-                    }
-                }
-                catch (SqlParseException e){
-                    throw new InternalCompilerError("Error parsing SQL query: " + e.getMessage());
-                }
-                return result;
-            }
-
-            LogicalProject project = (LogicalProject) agg.getInput();
-            List<RexNode> projectExpressions = project.getProjects();
-            
-            // Check if the project contains only columns from the source table
-            if (projectExpressions.size() == 1 && projectExpressions.get(0) instanceof RexInputRef) {
-                RexInputRef columnRef = (RexInputRef) projectExpressions.get(0);
-                String columnName = columnRef.getName();
-                columnIndex = columnRef.getIndex();
-                strategy = project.getInput().getTable().getColumnStrategies().get(columnIndex);
-                RelDataType type = project.getInput().getRowType().getFieldList().get(columnIndex).getType();
-                // TODO: skip schema identifier, but also check if it is there
-                String sourceTable = project.getInput().getTable().getQualifiedName().get(1);
-                DBSPZSetLiteral tableContents = this.tableContents.getTableContents(sourceTable);
-                try{
-                    SqlParser parser = SqlParser.create(modify.data.toString().replace("`", ""));
-                    SqlNode sqlNode = parser.parseQuery();
-                    if (sqlNode instanceof SqlSelect){
-                        SqlSelect select = (SqlSelect) sqlNode;
-                        result = handleAggregations(select, tableContents, columnIndex, node, strategy, type.toString());
-                    }
-                }
-                catch (SqlParseException e){
-                    throw new InternalCompilerError("Error parsing SQL query: " + e.getMessage());
-                }
-                
+            if (agg.getInput() instanceof LogicalTableScan) {
+                result = handleTableScan(modify, agg, node);
+            } else if (agg.getInput() instanceof LogicalProject) {
+                result = handleProject(modify, agg, node);
             } else {
                 throw new UnimplementedException(modify.getCalciteObject());
             }
@@ -2321,6 +2250,91 @@ public class CalciteToDBSPCompiler extends RelVisitor
         return result;
     }
 
+    private DBSPZSetLiteral handleTableScan(TableModifyStatement modify, LogicalAggregate agg, CalciteObject node) {
+        LogicalTableScan scan = (LogicalTableScan) agg.getInput();
+        List<String> name = scan.getTable().getQualifiedName();
+        String sourceTable = name.get(name.size() - 1);
+        DBSPZSetLiteral tableContents = this.tableContents.getTableContents(sourceTable);
+        RelDataType type = null;
+        ColumnStrategy strategy = null;
+    
+        try {
+            SqlParser parser = SqlParser.create(modify.data.toString().replace("`", ""));
+            SqlNode sqlNode = parser.parseQuery();
+    
+            if (sqlNode instanceof SqlSelect) {
+                SqlSelect select = (SqlSelect) sqlNode;
+                boolean isStar = select.getSelectList().size() == 1 && select.getSelectList().get(0).toString().equals("COUNT(*)");
+    
+                List<SqlNode> selectItems = select.getSelectList();
+                SqlNode fromNode = select.getFrom();
+                String fromString = fromNode.toString().replace("`", "");
+                String alias = fromString.substring(fromString.lastIndexOf(" ") + 1);
+    
+                CreateTableStatement source = this.tableContents.getTableDefinition(alias);
+                int columnIndex = findColumnIndex(selectItems, alias, source);
+    
+                strategy = scan.getTable().getColumnStrategies().get(columnIndex);
+                type = scan.getRowType().getFieldList().get(columnIndex).getType();
+    
+                if (isStar) {
+                    return handleCount(tableContents, columnIndex, strategy, type.toString());
+                } else {
+                    return handleDistinct(tableContents, columnIndex);
+                }
+            }
+        } catch (SqlParseException e) {
+            throw new InternalCompilerError("Error parsing SQL query: " + e.getMessage());
+        }
+        return null;
+    }
+    
+    private DBSPZSetLiteral handleProject(TableModifyStatement modify, LogicalAggregate agg, CalciteObject node) {
+        LogicalProject project = (LogicalProject) agg.getInput();
+        List<RexNode> projectExpressions = project.getProjects();
+    
+        if (projectExpressions.size() == 1 && projectExpressions.get(0) instanceof RexInputRef) {
+            RexInputRef columnRef = (RexInputRef) projectExpressions.get(0);
+            int columnIndex = columnRef.getIndex();
+            ColumnStrategy strategy = project.getInput().getTable().getColumnStrategies().get(columnIndex);
+            RelDataType type = project.getInput().getRowType().getFieldList().get(columnIndex).getType();
+            String sourceTable = project.getInput().getTable().getQualifiedName().get(1);
+            DBSPZSetLiteral tableContents = this.tableContents.getTableContents(sourceTable);
+    
+            try {
+                SqlParser parser = SqlParser.create(modify.data.toString().replace("`", ""));
+                SqlNode sqlNode = parser.parseQuery();
+    
+                if (sqlNode instanceof SqlSelect) {
+                    SqlSelect select = (SqlSelect) sqlNode;
+                    DBSPZSetLiteral resultLiteral = handleAggregations(select, tableContents, columnIndex, node, strategy, type.toString());
+                    return resultLiteral;
+                }
+            } catch (SqlParseException e) {
+                throw new InternalCompilerError("Error parsing SQL query: " + e.getMessage());
+            }
+        } else {
+            throw new UnimplementedException(modify.getCalciteObject());
+        }
+    
+        return null;
+    }
+    
+    private int findColumnIndex(List<SqlNode> selectItems, String alias, CreateTableStatement source) {
+        for (int i = 0; i < source.columns.size(); i++) {
+            String columnName = "COUNT(" + alias + "." + source.columns.get(i).getName() + ")";
+            
+            for (int j=0; j < selectItems.size(); j++){
+                SqlNode item = selectItems.get(j);
+                String itemString = item.toString().replace("`", "");
+                if (itemString.equalsIgnoreCase(columnName)){
+                    return i;
+                }
+            }
+        }
+        return 0;
+    }
+    
     private static DBSPZSetLiteral handleAggregations(SqlSelect select, DBSPZSetLiteral tableContents, int columnIndex, CalciteObject object, ColumnStrategy strategy, String type) {
         List<SqlNode> selectList = select.getSelectList().getList();
     
