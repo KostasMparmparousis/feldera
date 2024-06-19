@@ -2323,15 +2323,16 @@ public class CalciteToDBSPCompiler extends RelVisitor
 
     private static DBSPZSetLiteral handleAggregations(SqlSelect select, DBSPZSetLiteral tableContents, int columnIndex, CalciteObject object, ColumnStrategy strategy, String type) {
         List<SqlNode> selectList = select.getSelectList().getList();
+    
         if (select.isDistinct()) {
             return handleDistinct(tableContents, columnIndex);
         }
-        
+    
         for (SqlNode node : selectList) {
             if (node instanceof SqlBasicCall) {
                 SqlBasicCall call = (SqlBasicCall) node;
                 SqlKind kind = call.getOperator().getKind();
-
+    
                 switch (call.getOperator().toString()) {
                     case "COUNT":
                         return handleDistinct(tableContents, columnIndex);
@@ -2343,52 +2344,43 @@ public class CalciteToDBSPCompiler extends RelVisitor
                         return handleMax(tableContents, columnIndex);
                     case "SUM":
                         return handleSum(tableContents, columnIndex, strategy, type);
-                    // Add more cases for other aggregation functions
                     default:
-                        System.out.println("call: " + call.toString());
-                        System.out.println("Unknown aggregation function: " + kind);
+                        System.err.println("Unknown aggregation function: " + call.toString());
                         return null;
                 }
             }
         }
         return null;
     }
-
+    
     private static DBSPZSetLiteral handleCount(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy, String type) {
-        // Extract distinct values manually
         long nonNullCount = 0;
-
+    
         for (DBSPExpression expression : tableContents.data.keySet()) {
             if (expression instanceof DBSPTupleExpression) {
                 DBSPTupleExpression tuple = (DBSPTupleExpression) expression;
-                DBSPExpression value = tuple.get(columnIndex); // Get the value at the specified index
+                DBSPExpression value = tuple.get(columnIndex);
                 if (value != null) {
                     nonNullCount++;
                 }
             } else {
-                throw new InternalCompilerError(
-                        "Expected DBSPExpression, but got " + expression.getClass().getName());
+                throw new InternalCompilerError("Expected DBSPTupleExpression, but got " + expression.getClass().getName());
             }
         }
-
-        boolean nullable = true;
+    
         if (strategy == ColumnStrategy.NOT_NULLABLE) {
-            nullable = false;
             nonNullCount = tableContents.data.size();
         }
-
-        DBSPI64Literal countValue = new DBSPI64Literal(nonNullCount, nullable);
+    
+        DBSPI64Literal countValue = new DBSPI64Literal(nonNullCount, strategy != ColumnStrategy.NOT_NULLABLE);
         DBSPTupleExpression countTuple = new DBSPTupleExpression(countValue);
-        DBSPZSetLiteral countResult = new DBSPZSetLiteral(countTuple.type);
-        countResult.add(countTuple);
-        return countResult;
+        return new DBSPZSetLiteral(countTuple.type).add(countTuple);
     }
-
+    
     private static DBSPZSetLiteral handleAvg(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy, String type) {
-        DBSPExpression resultElement = null;
-        Double resultValue = 0.0;
+        double resultValue = 0.0;
         int count = 0;
-
+    
         for (DBSPExpression expression : tableContents.data.keySet()) {
             if (!(expression instanceof DBSPTupleExpression)) {
                 throw new InternalCompilerError("Expected DBSPTupleExpression, but got " + expression.getClass().getName());
@@ -2397,7 +2389,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
             DBSPTupleExpression tuple = (DBSPTupleExpression) expression;
             DBSPExpression value = tuple.get(columnIndex);
     
-            if (!(value.getType() instanceof DBSPTypeInteger) && !(value.getType() instanceof DBSPTypeDouble) && !(value.getType() instanceof DBSPTypeDecimal) && !(value.getType() instanceof DBSPTypeReal)) {
+            if (!isNumericType(value.getType())) {
                 throw new InternalCompilerError("Expected numeric type, but got " + value.getType().getClass().getName());
             }
     
@@ -2409,34 +2401,16 @@ public class CalciteToDBSPCompiler extends RelVisitor
             resultValue += currentValue;
             count++;
         }
-        double avg = resultValue / count;
-
-        boolean nullable = true;
-        if (strategy == ColumnStrategy.NOT_NULLABLE) {
-            nullable = false;
-        }
-
-        DBSPExpression avgValue;
-        switch (type.toUpperCase()) {
-            case "REAL":
-                avgValue = new DBSPRealLiteral((float) avg, nullable);
-                break;
-            default:
-                avgValue = new DBSPDoubleLiteral(avg, nullable);
-                break;
-        }
     
+        double avg = resultValue / count;
+        DBSPExpression avgValue = createNumericLiteral(avg, type, strategy != ColumnStrategy.NOT_NULLABLE);
         DBSPTupleExpression avgTuple = new DBSPTupleExpression(avgValue);
-        DBSPZSetLiteral avgResult = new DBSPZSetLiteral(avgTuple.type);
-        avgResult.add(avgTuple);
-
-        return avgResult;
+        return new DBSPZSetLiteral(avgTuple.type).add(avgTuple);
     }
-
+    
     private static DBSPZSetLiteral handleSum(DBSPZSetLiteral tableContents, int columnIndex, ColumnStrategy strategy, String type) {
-        DBSPExpression resultElement = null;
-        long sum = 0;
-
+        double sum = 0;
+    
         for (DBSPExpression expression : tableContents.data.keySet()) {
             if (!(expression instanceof DBSPTupleExpression)) {
                 throw new InternalCompilerError("Expected DBSPTupleExpression, but got " + expression.getClass().getName());
@@ -2445,7 +2419,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
             DBSPTupleExpression tuple = (DBSPTupleExpression) expression;
             DBSPExpression value = tuple.get(columnIndex);
     
-            if (!(value.getType() instanceof DBSPTypeInteger) && !(value.getType() instanceof DBSPTypeDouble) && !(value.getType() instanceof DBSPTypeDecimal) && !(value.getType() instanceof DBSPTypeReal)) {
+            if (!isNumericType(value.getType())) {
                 throw new InternalCompilerError("Expected numeric type, but got " + value.getType().getClass().getName());
             }
     
@@ -2456,16 +2430,10 @@ public class CalciteToDBSPCompiler extends RelVisitor
     
             sum += currentValue;
         }
-        boolean nullable = true;
-        if (strategy == ColumnStrategy.NOT_NULLABLE) {
-            nullable = false;
-        }
-
-        DBSPI64Literal sumValue = new DBSPI64Literal(sum, nullable);
+    
+        DBSPI64Literal sumValue = new DBSPI64Literal((long) sum, strategy != ColumnStrategy.NOT_NULLABLE);
         DBSPTupleExpression sumTuple = new DBSPTupleExpression(sumValue);
-        DBSPZSetLiteral sumResult = new DBSPZSetLiteral(sumTuple.type);
-        sumResult.add(sumTuple);
-        return sumResult;
+        return new DBSPZSetLiteral(sumTuple.type).add(sumTuple);
     }
     
     private static DBSPZSetLiteral handleMin(DBSPZSetLiteral tableContents, int columnIndex) {
@@ -2477,8 +2445,8 @@ public class CalciteToDBSPCompiler extends RelVisitor
     }
     
     private static DBSPZSetLiteral handleMinMax(DBSPZSetLiteral tableContents, int columnIndex, boolean isMin) {
-        DBSPExpression resultElement = null;
         Double resultValue = isMin ? Double.MAX_VALUE : Double.MIN_VALUE;
+        DBSPExpression resultElement = null;
     
         for (DBSPExpression expression : tableContents.data.keySet()) {
             if (!(expression instanceof DBSPTupleExpression)) {
@@ -2488,7 +2456,7 @@ public class CalciteToDBSPCompiler extends RelVisitor
             DBSPTupleExpression tuple = (DBSPTupleExpression) expression;
             DBSPExpression value = tuple.get(columnIndex);
     
-            if (!(value.getType() instanceof DBSPTypeInteger) && !(value.getType() instanceof DBSPTypeDouble) && !(value.getType() instanceof DBSPTypeDecimal) && !(value.getType() instanceof DBSPTypeReal)) {
+            if (!isNumericType(value.getType())) {
                 throw new InternalCompilerError("Expected numeric type, but got " + value.getType().getClass().getName());
             }
     
@@ -2508,9 +2476,11 @@ public class CalciteToDBSPCompiler extends RelVisitor
         }
     
         DBSPTupleExpression singleValueTuple = new DBSPTupleExpression(resultElement);
-        DBSPZSetLiteral result = new DBSPZSetLiteral(singleValueTuple.type);
-        result.add(singleValueTuple, 1L);
-        return result;
+        return new DBSPZSetLiteral(singleValueTuple.type).add(singleValueTuple, 1L);
+    }
+    
+    private static boolean isNumericType(DBSPType type) {
+        return type instanceof DBSPTypeInteger || type instanceof DBSPTypeDouble || type instanceof DBSPTypeDecimal || type instanceof DBSPTypeReal;
     }
     
     private static Double extractNumericValue(DBSPExpression value) {
@@ -2523,24 +2493,28 @@ public class CalciteToDBSPCompiler extends RelVisitor
             return null;
         }
     
-        String numberString = valueString.substring(startIndex, endIndex).trim();        
+        String numberString = valueString.substring(startIndex, endIndex).trim();
         try {
-            if (value.getType() instanceof DBSPTypeInteger) {
-                return Double.valueOf(numberString);
-            } else if (value.getType() instanceof DBSPTypeDouble || value.getType() instanceof DBSPTypeDecimal || value.getType() instanceof DBSPTypeReal) {
-                return Double.parseDouble(numberString);
-            }
+            return Double.parseDouble(numberString);
         } catch (NumberFormatException e) {
             System.err.println("Failed to parse numeric value: " + value);
+            return null;
         }
-        return null;
     }
-
+    
+    private static DBSPExpression createNumericLiteral(double value, String type, boolean nullable) {
+        switch (type.toUpperCase()) {
+            case "REAL":
+                return new DBSPRealLiteral((float) value, nullable);
+            default:
+                return new DBSPDoubleLiteral(value, nullable);
+        }
+    }
+    
     private static DBSPZSetLiteral handleDistinct(DBSPZSetLiteral tableContents, int columnIndex) {
-        // Extract distinct values manually
         Map<DBSPExpression, Long> distinctCounts = new HashMap<>();
         DBSPExpression value = null;
-
+    
         for (DBSPExpression expression : tableContents.data.keySet()) {
             if (expression instanceof DBSPTupleExpression) {
                 DBSPTupleExpression tuple = (DBSPTupleExpression) expression;
@@ -2561,17 +2535,19 @@ public class CalciteToDBSPCompiler extends RelVisitor
                         "Expected DBSPExpression, but got " + expression.getClass().getName());
             }
         }
-        DBSPTupleExpression singleValueTup = new DBSPTupleExpression(value); // Create a single-value tuple
+        // Create a single-value tuple
+        DBSPTupleExpression singleValueTup = new DBSPTupleExpression(value); 
+
         // Create a new result with distinct values and their counts
         DBSPZSetLiteral countResult = new DBSPZSetLiteral(singleValueTup.type);
         for (Map.Entry<DBSPExpression, Long> entry : distinctCounts.entrySet()) {
             DBSPExpression tmpValue = entry.getKey();
-            DBSPTupleExpression singleValueTuple = new DBSPTupleExpression(tmpValue); // Create a single-value
-                                                                                      // tuple
+            DBSPTupleExpression singleValueTuple = new DBSPTupleExpression(tmpValue);
             countResult.add(singleValueTuple, entry.getValue());
-        }
+        }    
         return countResult;
     }
+    
 
     @Nullable
     DBSPNode compileCreateType(CreateTypeStatement stat) {
