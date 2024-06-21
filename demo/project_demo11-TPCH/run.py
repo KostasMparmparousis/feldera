@@ -3,41 +3,47 @@ import time
 import requests
 import argparse
 import subprocess
+import pandas as pd
+from itertools import islice
 from shutil import which
 from plumbum.cmd import rpk
 
 # File locations
 SCRIPT_DIR = os.path.join(os.path.dirname(__file__))
 PROJECT_SQL = os.path.join(SCRIPT_DIR, "project.sql")
+DIRECTORY_PATH = '/home/mpkostas/DatabaseSystems/TPC-H_V3.0.1/dbgen/exportFactor'
 
 def main():
     # Command-line arguments
     parser = argparse.ArgumentParser()
     default_api_url = "http://localhost:8080"
+    kafka_api_url = "http://localhost:9092"
+    registry_url = "http://localhost:8081"
     parser.add_argument("--api-url", default=default_api_url, help=f"Feldera API URL (default: {default_api_url})")
-    parser.add_argument("--prepare-args", required=False, help="number of SecOps pipelines to simulate")
-    parser.add_argument("--kafka-url-for-connector", required=False, default="redpanda:9092",
+    parser.add_argument("--kafka-url-for-connector", required=False, default=kafka_api_url,
                         help="Kafka URL from pipeline")
-    parser.add_argument("--registry-url-for-connector", required=False, default="http://redpanda:8081",
+    parser.add_argument("--registry-url-for-connector", required=False, default=registry_url,
                         help="Schema registry URL from pipeline")
-    parser.add_argument('--delete-extra', default=False, action=argparse.BooleanOptionalAction, help='delete other programs, pipelines, and connectors (default: --no-delete-extra)')
+    parser.add_argument('--scaling-factor', default=1, type=int, required=False, help='TPCH-H scaling factor')
 
     args = parser.parse_args()
-    prepare_redpanda()
-    prepare_feldera(args.api_url, args.kafka_url_for_connector, args.registry_url_for_connector, args.delete_extra)
+    directory_path = DIRECTORY_PATH + str(args.scaling_factor)
+    prepare_redpanda(directory_path)
+    prepare_feldera(args.api_url, args.kafka_url_for_connector)
 
 PROGRAM_NAME = "tpc-h-program"
 PIPELINE_NAME = "tpc-h-pipeline"
 
 # NEEDS CHANGE
 CONNECTORS = [
-    ("secops_pipeline", 'PIPELINE', ["secops_pipeline"], True),
-    ("secops_pipeline_sources", 'PIPELINE_SOURCES', ["secops_pipeline_sources"], True),
-    ("secops_artifact", 'ARTIFACT', ["secops_artifact"], True),
-    ("secops_vulnerability", 'VULNERABILITY', ["secops_vulnerability"], True),
-    ("secops_cluster", 'K8SCLUSTER', ["secops_cluster"], True),
-    ("secops_k8sobject", 'K8SOBJECT', ["secops_k8sobject"], True),
-    ("secops_vulnerability_stats", 'K8SCLUSTER_VULNERABILITY_STATS', "secops_vulnerability_stats", False),
+    ("tpch_nation", 'NATION', ["tpch_nation"], True),
+    ("tpch_region", 'REGION', ["tpch_region"], True),
+    ("tpch_part", 'PART', ["tpch_part"], True),
+    ("tpch_supplier", 'SUPPLIER', ["tpch_supplier"], True),
+    ("tpch_partsupp", 'PARTSUPP', ["tpch_partsupp"], True),
+    ("tpch_customer", 'CUSTOMER', ["tpch_customer"], True),
+    ("tpch_orders", 'ORDERS', "tpch_orders", True),
+    ("tpch_lineitem", 'LINEITEM', "tpch_line_item", True)
 ]
 
 def wait_for_status(api_url, pipeline_name, status):
@@ -77,45 +83,106 @@ def delete_connector(api_url, connector_name):
 def delete_program(api_url, program_name):
     requests.delete(f"{api_url}/v0/programs/{program_name}").raise_for_status()
 
-#NEEDS CHANGE
-def prepare_redpanda():
+def prepare_redpanda(dir):
     # Prepare Kafka topics
     print("(Re-)creating Kafka topics...")
-    rpk['topic', 'delete', 'fraud_demo_large_demographics']()
-    rpk['topic', 'delete', 'fraud_demo_large_transactions']()
-    rpk['topic', 'delete', 'fraud_demo_large_enriched']()
-    rpk['topic', 'create', 'fraud_demo_large_demographics',
+    rpk['topic', 'delete', 'tpch_nations']()
+    rpk['topic', 'delete', 'tpch_regions']()
+    rpk['topic', 'delete', 'tpch_parts']()
+    rpk['topic', 'delete', 'tpch_suppliers']()
+    rpk['topic', 'delete', 'tpch_partsupp']()
+    rpk['topic', 'delete', 'tpch_customers']()
+    rpk['topic', 'delete', 'tpch_orders']()
+    rpk['topic', 'delete', 'tpch_lineitems']()
+
+    rpk['topic', 'create', 'tpch_nations',
         '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
-    rpk['topic', 'create', 'fraud_demo_large_transactions',
+    rpk['topic', 'create', 'tpch_regions',
         '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
-    rpk['topic', 'create', 'fraud_demo_large_enriched']()
+    rpk['topic', 'create', 'tpch_parts',
+        '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
+    rpk['topic', 'create', 'tpch_suppliers',
+        '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
+    rpk['topic', 'create', 'tpch_partsupp',
+        '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
+    rpk['topic', 'create', 'tpch_customers',
+        '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
+    rpk['topic', 'create', 'tpch_orders',
+        '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()
+    rpk['topic', 'create', 'tpch_lineitems',
+        '-c', 'retention.ms=-1', '-c', 'retention.bytes=-1']()    
+
     print("(Re-)created Kafka topics")
 
-    transactions_csv = os.path.join(
-        SCRIPT_DIR, 'transactions.csv')
-    demographics_csv = os.path.join(
-        SCRIPT_DIR, 'demographics.csv')
-
-    if not os.path.exists(transactions_csv):
-        from plumbum.cmd import gdown
-        print("Downloading transactions.csv (~2 GiB)...")
-        gdown['1YuiKl-MMbEujTOwPOyxEoVCh088y9jxI',
-              '--output', transactions_csv]()
+    nations_csv = os.path.join(
+        dir, 'nation.csv')
+    regions_csv = os.path.join(
+        dir, 'region.csv')
+    parts_csv = os.path.join(
+        dir, 'part.csv')    
+    suppliers_csv = os.path.join(
+        dir, 'supplier.csv')
+    partsupps_csv = os.path.join(
+        dir, 'partsupp.csv')
+    customers_csv = os.path.join(
+        dir, 'customer.csv')
+    orders_csv = os.path.join(
+        dir, 'order.csv')
+    lineitems_csv = os.path.join(
+        dir, 'lineitem.csv')        
 
     # Push test data to topics
-    print('Pushing demographics data to Kafka topic...')
-    with open(demographics_csv, 'r') as f:
+    print('Pushing nations data to Kafka topic...')
+    with open(nations_csv, 'r') as f:
         for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
-            (rpk['topic', 'produce', 'fraud_demo_large_demographics',
+            (rpk['topic', 'produce', 'tpch_nations',
              '-f', '%v'] << '\n'.join(n_lines))()
-    print('Pushing transaction data to Kafka topic...')
-    with open(transactions_csv, 'r') as f:
-        for n_lines in iter(lambda: tuple(islice(f, 8_000)), ()):
+
+    print('Pushing regions data to Kafka topic...')
+    with open(regions_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
             (rpk['topic', 'produce',
-                 'fraud_demo_large_transactions', '-f', '%v'] << '\n'.join(n_lines))()
+                 'tpch_regions', '-f', '%v'] << '\n'.join(n_lines))()
+
+    print('Pushing parts data to Kafka topic...')
+    with open(parts_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
+            (rpk['topic', 'produce',
+                 'tpch_parts', '-f', '%v'] << '\n'.join(n_lines))()
+
+    print('Pushing suppliers data to Kafka topic...')
+    with open(suppliers_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
+            (rpk['topic', 'produce',
+                 'tpch_suppliers', '-f', '%v'] << '\n'.join(n_lines))()
+
+    print('Pushing partsupps data to Kafka topic...')
+    with open(partsupps_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
+            (rpk['topic', 'produce',
+                 'tpch_partsupp', '-f', '%v'] << '\n'.join(n_lines))()
+
+    print('Pushing customers data to Kafka topic...')
+    with open(customers_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
+            (rpk['topic', 'produce',
+                 'tpch_customers', '-f', '%v'] << '\n'.join(n_lines))()
+
+    print('Pushing orders data to Kafka topic...')
+    with open(orders_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
+            (rpk['topic', 'produce',
+                 'tpch_orders', '-f', '%v'] << '\n'.join(n_lines))()
+
+    print('Pushing lineitem data to Kafka topic...')
+    with open(lineitems_csv, 'r') as f:
+        for n_lines in iter(lambda: tuple(islice(f, 1000)), ()):
+            (rpk['topic', 'produce',
+                 'tpch_lineitems', '-f', '%v'] << '\n'.join(n_lines))()
 
 
-def prepare_feldera(api_url, pipeline_to_redpanda_server, pipeline_to_schema_registry, delete_extra):
+def prepare_feldera(api_url, pipeline_to_redpanda_server):
+    delete_extra = True
     if delete_extra:
         for pipeline in list_pipelines(api_url):
             stop_pipeline(api_url, pipeline, False)
@@ -152,36 +219,26 @@ def prepare_feldera(api_url, pipeline_to_redpanda_server, pipeline_to_schema_reg
     # Connectors
     connectors = []
     for (connector_name, stream, topic_topics, is_input) in CONNECTORS:
+        # Create connector
         requests.put(f"{api_url}/v0/connectors/{connector_name}", json={
             "description": "",
             "config": {
                 "format": {
-                    "name": "json",
-                    "config": {
-                        "update_format": "insert_delete"
-                    }
+                    "name": "csv",
+                    "config": {}
                 },
                 "transport": {
                     "name": "kafka_" + ("input" if is_input else "output"),
                     "config": {
                         "bootstrap.servers": pipeline_to_redpanda_server,
                         "topic": topic_topics
-                    } if not is_input else (
-                        {
-                            "bootstrap.servers": pipeline_to_redpanda_server,
-                            "topics": topic_topics,
-                            "auto.offset.reset": "earliest",
-                            "group.id": "secops_pipeline_sources",
-                            "enable.auto.commit": "true",
-                            "enable.auto.offset.store": "true",
-                        }
-                        if stream == "PIPELINE_SOURCES" else
-                        {
-                            "bootstrap.servers": pipeline_to_redpanda_server,
-                            "topics": topic_topics,
-                            "auto.offset.reset": "earliest"
-                        }
-                    )
+                    }
+                    if not is_input else
+                    {
+                        "bootstrap.servers": pipeline_to_redpanda_server,
+                        "topics": topic_topics,
+                        "auto.offset.reset": "earliest"
+                    }
                 }
             }
         })
@@ -192,48 +249,6 @@ def prepare_feldera(api_url, pipeline_to_redpanda_server, pipeline_to_schema_reg
             "relation_name": stream
         })
 
-    #NEEDS CHANGE
-    schema = """{
-            "type": "record",
-            "name": "k8scluster_vulnerability_stats",
-            "fields": [
-                { "name": "k8scluster_id", "type": "long" },
-                { "name": "k8scluster_name", "type": "string" },
-                { "name": "total_vulnerabilities", "type": "long" },
-                { "name": "most_severe_vulnerability", "type": ["null","int"] }
-            ]
-        }"""
-
-    #NEEDS CHANGE
-    if pipeline_to_schema_registry:
-        requests.put(f"{api_url}/v0/connectors/secops_vulnerability_stats_avro", json={
-            "description": "",
-            "config": {
-                "format": {
-                    "name": "avro",
-                    "config": {
-                        "schema": schema,
-                        "registry_urls": [pipeline_to_schema_registry],
-                    }
-                },
-                "transport": {
-                    "name": "kafka_output",
-                    "config": {
-                        "bootstrap.servers": pipeline_to_redpanda_server,
-                        "topic": "secops_vulnerability_stats_avro",
-                        "headers": [{"key": "header1", "value": "this is a string"},
-                                    {"key": "header2", "value": list(b'byte array')}]
-                    }
-                }
-            }
-        })
-        connectors.append({
-            "connector_name": "secops_vulnerability_stats_avro",
-            "is_input": False,
-            "name": "secops_vulnerability_stats_avro",
-            "relation_name": "k8scluster_vulnerability_stats"
-        })
-
     # Create pipeline
     requests.put(f"{api_url}/v0/pipelines/{PIPELINE_NAME}", json={
         "description": "",
@@ -241,6 +256,11 @@ def prepare_feldera(api_url, pipeline_to_redpanda_server, pipeline_to_schema_reg
         "program_name": PROGRAM_NAME,
         "connectors": connectors,
     }).raise_for_status()
+
+    print("(Re)starting pipeline...")
+    stop_pipeline()
+    start_pipeline()
+    print("Pipeline (re)started")
 
 if __name__ == "__main__":
     main()
