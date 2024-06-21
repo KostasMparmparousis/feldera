@@ -3475,6 +3475,11 @@
             "type": "string",
             "description": "Program description.",
             "example": "Example description"
+          },
+          "rust_code": {
+            "type": "string",
+            "description": "Rust code of the program.",
+            "example": "pub fn CONTAINS_NUMBER(slice: &[i32], number: i32) { for &item in slice.iter(){if item == number { return true; } } false }"
           }
         }
       },

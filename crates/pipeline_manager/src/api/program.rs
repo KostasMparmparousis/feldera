@@ -112,6 +112,9 @@ pub(crate) struct CreateOrReplaceProgramRequest {
     /// Program configuration.
     #[serde(default)]
     config: ProgramConfig,
+    /// Optional rust code for udf functions.
+    #[schema(example = "pub fn CONTAINS_NUMBER(slice: &[i32], number: i32) { for &item in slice.iter(){if item == number { return true; } } false }")]
+    rust_code: Option<String>,
 }
 
 /// Response to a create or replace program request.
@@ -314,6 +317,7 @@ async fn update_program(
             &body.description,
             &body.code,
             &body.config,
+            &body.rust_code,
             body.guard,
         )
         .await?;
@@ -363,6 +367,7 @@ async fn create_or_replace_program(
             &body.description,
             &body.code,
             &body.config,
+            &body.rust_code,
         )
         .await?;
     if created {

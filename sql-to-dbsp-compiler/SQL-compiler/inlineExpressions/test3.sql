@@ -1,0 +1,5 @@
+CREATE FUNCTION contains_number(str VARCHAR NOT NULL, value INTEGER)
+RETURNS BOOLEAN
+AS (str LIKE ('%' || CAST(value AS VARCHAR) || '%'));
+
+CREATE VIEW V0 AS SELECT contains_number(CAST('YES: 10 NO:5' AS VARCHAR), 5)
