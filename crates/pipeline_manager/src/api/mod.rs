@@ -84,8 +84,8 @@ use crate::api::api_key::{create_api_key, list_api_keys};
 use crate::api::udf::create_udf;
 
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(web::resource("/api-keys").route(web::get().to(list_api_keys)));
-    cfg.service(web::resource("/api-keys").route(web::post().to(create_api_key)));
+
+
     cfg.service(web::resource("/udf").route(web::post().to(create_udf)));
 }
 
