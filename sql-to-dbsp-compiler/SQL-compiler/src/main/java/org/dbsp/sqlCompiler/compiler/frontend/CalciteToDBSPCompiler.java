@@ -2251,8 +2251,6 @@ public class CalciteToDBSPCompiler extends RelVisitor
         System.out.println("\n-----------------------------\n");
         System.out.println("The aggregation statement is:\n\n" + modify.data + "\n");
         System.out.println("\nThe result of the aggregation is:\n\n" + result);
-        // System.out.println("\nTable " + modify.tableName + " now contains:\n\n" +
-        // result);
         System.out.println("\n-----------------------------\n");
         return result;
     }
