@@ -1,14 +1,72 @@
 /// API to create, modify and delete Services,
 /// which represent named external services such as Kafka.
 use super::{ManagerError, ServerState};
-use crate::api::parse_string_param;
-use crate::db::ServiceProbeId;
-use crate::prober::service::{ServiceProbeRequest, ServiceProbeType};
+
+
+
+
+
 use crate::{
-    api::examples,
+    api::{examples, parse_string_param},
     auth::TenantId,
-    db::{storage::Storage, DBError, ServiceId},
+    db::{storage::Storage, DBError, ServiceId, ProgramId, ServiceProbeId},
+    prober::service::{ServiceProbeRequest, ServiceProbeType},
+    api::udf::UdfRequest, // Correct import
+    api::program::handle_udf_creation, // Ensure correct import
 };
+//new new new new new new new new new new new new new new
+
+
+
+
+
+
+
+
+pub async fn start_program_with_udfs(_program_id: ProgramId, udf: UdfRequest) -> Result<(), ManagerError> {
+    let _udf_response = handle_udf_creation(udf).await?;
+    // Logic to start the program, ensuring UDFs are included
+    // ...
+    Ok(())
+}
+
+
+
+
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 use actix_web::web::Query;
 use actix_web::{
     delete, get,

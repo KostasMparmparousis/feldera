@@ -6,18 +6,74 @@ use actix_web::{
     web::{self, Data as WebData, ReqData},
     HttpRequest, HttpResponse,
 };
+
+//new new new new new new new new new new new new new new
+
+
+
+pub async fn handle_udf_creation(udf: UdfRequest) -> Result<UdfResponse, ManagerError> {
+    // Logic to handle UDF creation, e.g., compiling the UDF
+    let udf_filename = format!("{}.rs", udf.name);
+    std::fs::write(&udf_filename, &udf.definition).expect("Unable to write UDF file");
+
+    let output = std::process::Command::new("./sql-to-dbsp")
+        .arg("test.sql")
+        .arg("--udf")
+        .arg(&udf_filename)
+        .arg("--handles")
+        .arg("-o")
+        .arg("output.rs")
+        .output()
+        .expect("Failed to execute process");
+
+    if output.status.success() {
+        Ok(UdfResponse { message: format!("UDF {} created", udf.name) })
+    } else {
+        let error_message = String::from_utf8_lossy(&output.stderr);
+        Err(ManagerError::io_error(
+            format!("Failed to create UDF: {}", error_message),
+            std::io::Error::new(std::io::ErrorKind::Other, "UDF creation error")
+        ))
+        
+
+    }
+}
+
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+//new new new new new new new new new new new new new new
+
+
+
+
+
+
+
+
+
+
+
+
 use log::info;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
-
+use  super::{ManagerError, ServerState};
 use crate::{
     api::{examples, parse_string_param},
     auth::TenantId,
     compiler::ProgramConfig,
     db::{storage::Storage, DBError, ProgramId, Version},
+    api::udf::{UdfRequest, UdfResponse}, // Correct import
+   
 };
 
-use super::{ManagerError, ServerState};
+
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize, IntoParams)]

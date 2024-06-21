@@ -4,7 +4,12 @@ use crate::{
     api::{examples, parse_string_param},
     auth::TenantId,
     db::{storage::Storage, ApiKeyId},
+    api::udf::{UdfRequest, UdfResponse},
 };
+use actix_web::Responder;
+
+
+
 use actix_web::{
     delete, get,
     http::header::{CacheControl, CacheDirective},
@@ -14,8 +19,33 @@ use actix_web::{
 };
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::process::Command;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+
+
+pub async fn create_udf(udf: web::Json<UdfRequest>) -> impl Responder {
+    let udf_filename = format!("{}.rs", udf.name);
+    std::fs::write(&udf_filename, &udf.definition).expect("Unable to write UDF file");
+
+    let output = Command::new("./sql-to-dbsp")
+        .arg("test.sql")
+        .arg("--udf")
+        .arg(&udf_filename)
+        .arg("--handles")
+        .arg("-o")
+        .arg("output.rs")
+        .output()
+        .expect("Failed to execute process");
+
+    if output.status.success() {
+        HttpResponse::Ok().json(UdfResponse { message: format!("UDF {} created", udf.name) })
+    } else {
+        let error_message = String::from_utf8_lossy(&output.stderr);
+        HttpResponse::InternalServerError().json(UdfResponse { message: format!("Failed to create UDF: {}", error_message) })
+    }
+}
+
 
 /// Request to create a new API key.
 #[derive(Debug, Deserialize, ToSchema)]

@@ -77,6 +77,9 @@ pub enum ManagerError {
     RustCompilerError {
         error: String,
     },
+    CustomError {
+        error: String,
+    },
 }
 
 impl ManagerError {
@@ -178,6 +181,9 @@ impl Display for ManagerError {
             Self::RustCompilerError { error } => {
                 write!(f, "Error compiling generated Rust code: {error}")
             }
+            Self::CustomError { error } => {
+                write!(f, "Custom error: {error}")
+            }
         }
     }
 }
@@ -197,11 +203,15 @@ impl ResponseError for ManagerError {
             Self::IoError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidProgramSchema { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             Self::RustCompilerError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::CustomError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+
         }
     }
 
     fn error_response(&self) -> HttpResponse<BoxBody> {
         HttpResponseBuilder::new(self.status_code()).json(ErrorResponse::from_error(self))
+        
+
     }
 }
 
@@ -220,6 +230,7 @@ impl DetailedError for ManagerError {
             Self::IoError { .. } => Cow::from("ManagerIoError"),
             Self::InvalidProgramSchema { .. } => Cow::from("InvalidProgramSchema"),
             Self::RustCompilerError { .. } => Cow::from("RustCompilerError"),
+            Self::CustomError { .. } => Cow::from("CustomError"),
         }
     }
 
@@ -228,6 +239,7 @@ impl DetailedError for ManagerError {
             Self::DBError { db_error } => db_error.log_level(),
             Self::RunnerError { runner_error } => runner_error.log_level(),
             _ => Level::Error,
+            
         }
     }
 }

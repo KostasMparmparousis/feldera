@@ -24,25 +24,40 @@ mod http_io;
 mod pipeline;
 mod program;
 mod service;
+mod udf;
 
+
+use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse, middleware::Logger};
+
+use actix_web::get;
+
+use actix_web::web::Data as WebData;
+use actix_web::dev::Service;
+
+
+
+
+
+
+
+
+
+
+
+
+
+use crate::auth::TenantId;
 use crate::prober::service::{
     ServiceProbeError, ServiceProbeRequest, ServiceProbeResponse, ServiceProbeResult,
     ServiceProbeStatus, ServiceProbeType,
 };
-
 use crate::auth::JwkCache;
 use crate::compiler;
 use crate::config;
 use crate::probe::Probe;
-use actix_web::dev::Service;
+
 use actix_web::Scope;
-use actix_web::{
-    get,
-    middleware::Logger,
-    web::Data as WebData,
-    web::{self},
-    App, HttpRequest, HttpResponse, HttpServer,
-};
+
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
 use anyhow::{Error as AnyError, Result as AnyResult};
@@ -64,7 +79,31 @@ pub use crate::error::ManagerError;
 use crate::runner::RunnerApi;
 use pipeline_types::config as pipeline_types_config;
 
-use crate::auth::TenantId;
+
+use crate::api::api_key::{create_api_key, list_api_keys};
+use crate::api::udf::create_udf;
+
+pub fn init_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/api-keys").route(web::get().to(list_api_keys)));
+    cfg.service(web::resource("/api-keys").route(web::post().to(create_api_key)));
+    cfg.service(web::resource("/udf").route(web::post().to(create_udf)));
+}
+
+#[actix_web::main]
+async fn start_server() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .configure(init_routes) // Use the init_routes function to configure routes
+            // Register other services or middleware here if needed
+    })
+    .bind("127.0.0.1:8080")? // Bind the server to the desired address and port
+    .run()
+    .await
+}
+
+fn main() {
+    start_server().expect("Failed to start server");
+}
 
 #[derive(OpenApi)]
 #[openapi(
