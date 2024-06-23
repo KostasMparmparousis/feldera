@@ -28,9 +28,13 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.calcite.runtime.CalciteContextException;
 import org.apache.calcite.schema.Schema;
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlFunction;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
+import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlSelect;
+import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlOperatorTable;
 import org.apache.calcite.sql.parser.SqlParseException;
@@ -50,12 +54,15 @@ import org.dbsp.sqlCompiler.compiler.frontend.CalciteToDBSPCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.TableContents;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CalciteCompiler;
 import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.CustomFunctions;
+import org.dbsp.sqlCompiler.compiler.frontend.calciteCompiler.SqlCreateFunctionDeclaration;
 import org.dbsp.sqlCompiler.compiler.frontend.parser.SqlCreateLocalView;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateFunctionStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.CreateViewStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.FrontEndStatement;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.IHasSchema;
 import org.dbsp.sqlCompiler.compiler.frontend.parser.SqlLateness;
+import org.dbsp.sqlCompiler.compiler.frontend.parser.InlineQueryUdfParser;
+import org.dbsp.sqlCompiler.compiler.frontend.parser.FunctionBodyParser;
 import org.dbsp.sqlCompiler.compiler.frontend.statements.LatenessStatement;
 import org.dbsp.sqlCompiler.compiler.visitors.outer.CircuitOptimizer;
 import org.dbsp.sqlCompiler.ir.expression.DBSPVariablePath;
@@ -239,8 +246,9 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
             if (this.hasErrors())
                 return;
 
-            // Compile first the statements that define functions, types, and lateness
+            // Compile first the statements that define functions, types, and lateness, except for inline table queries
             List<SqlFunction> functions = new ArrayList<>();
+            List<SqlNode> inlineQueryNodes = new ArrayList<>();
             for (SqlNode node: parsed) {
                 Logger.INSTANCE.belowLevel(this, 2)
                         .append("Parsing result: ")
@@ -256,6 +264,12 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                     continue;
                 }
                 if (kind == SqlKind.CREATE_FUNCTION) {
+                    SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) node;
+                    SqlNode body = decl.getBody();
+                    if (body.isA(SqlKind.QUERY)) {
+                        inlineQueryNodes.add(node);
+                        continue;
+                    }
                     FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                     if (fe == null)
                         continue;
@@ -284,22 +298,50 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 }
             }
 
-            // Compile all statements which do not define functions or types
+            // compile all "CREATE RELATION" statements, except for the ones that use the inline table queries
+            List<SqlNode> statementsWithInlineQuery = new ArrayList<>();
             for (SqlNode node : parsed) {
                 SqlKind kind = node.getKind();
                 if (kind == SqlKind.CREATE_FUNCTION || kind == SqlKind.CREATE_TYPE)
                     continue;
-                if (node instanceof SqlLateness)
+                boolean parsable = true;
+                for (SqlNode functNode : inlineQueryNodes) {
+                    SqlCreateFunctionDeclaration decl = (SqlCreateFunctionDeclaration) functNode;
+                    if (node.toString().contains(decl.getName().toString())) {
+                        statementsWithInlineQuery.add(node);
+                        parsable = false;
+                        break;
+                    }
+                }
+                if (parsable == false)
                     continue;
                 FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
                 if (fe == null)
                     // error during compilation
                     continue;
-                if (fe.is(CreateViewStatement.class)) {
-                    CreateViewStatement cv = fe.to(CreateViewStatement.class);
-                    this.views.put(cv.getName(), cv);
-                }
                 this.midend.compile(fe);
+            }
+
+            // Compile the remaining "CREATE RELATION" statements
+            for (SqlNode statement : statementsWithInlineQuery) {
+                if (statement instanceof SqlLateness)
+                    continue;
+                SqlCreateLocalView cv = (SqlCreateLocalView) statement;
+                SqlNode query = cv.query;
+                SqlIdentifier viewName = cv.name;
+                List<SqlCreateFunctionDeclaration> functionCalls = findFunctionCalls(query, inlineQueryNodes);
+                if (functionCalls.size() > 1){
+                    throw new IllegalArgumentException("Multiple inline query function calls found in the same statement.");
+                }
+                InlineQueryUdfParser inlineQueryUdfParser = new InlineQueryUdfParser(viewName, functionCalls.get(0));
+                SqlNodeList list = frontend.parseStatements(inlineQueryUdfParser.generateStatements(query));
+                for (SqlNode node : list) {
+                    FrontEndStatement fe = this.frontend.compile(node.toString(), node, comment);
+                    if (fe == null)
+                        // error during compilation
+                        continue;
+                    this.midend.compile(fe);
+                }
             }
         } catch (SqlParseException e) {
             if (e.getCause() instanceof BaseCompilerException) {
@@ -333,6 +375,55 @@ public class DBSPCompiler implements IWritesLogs, ICompilerComponent, IErrorRepo
                 throw e;
             }
         }
+    }
+
+    private List<SqlCreateFunctionDeclaration> findFunctionCalls(SqlNode statement, List<SqlNode> inlineQueryNodes) {
+        List<SqlCreateFunctionDeclaration> functionDeclarations = new ArrayList<>();
+
+        if (!(statement instanceof SqlSelect)) {
+            throw new IllegalArgumentException("Statement must be an instance of SqlSelect");
+        }
+
+        SqlSelect selectStatement = (SqlSelect) statement;
+
+        for (SqlNode inlineNode : inlineQueryNodes) {
+            if (!(inlineNode instanceof SqlCreateFunctionDeclaration)) {
+                continue;
+            }
+
+            SqlCreateFunctionDeclaration functionDeclaration = (SqlCreateFunctionDeclaration) inlineNode;
+
+            for (SqlNode selectNode : selectStatement.getSelectList()) {
+                if (selectNode instanceof SqlCall) {
+                    SqlCall call = (SqlCall) selectNode;
+                    SqlOperator operator = getOperatorFromCall(call);
+
+                    if (operator != null && operator.toString().toLowerCase().equals(functionDeclaration.getName().toString().toLowerCase())) {
+                        functionDeclarations.add(functionDeclaration);
+                    }
+                }
+            }
+        }
+
+        return functionDeclarations;
+    }
+
+    /*
+     * From an AS SqlCall (i.e `COUNTUSERBYAGEANDNAME`(`AGE`, `NAME`) AS `PRESENT_COUNT`)
+     * extract the SqlOperator from the first operand
+     * (i.e. `COUNTUSERBYAGEANDNAME`)
+     */
+    private SqlOperator getOperatorFromCall(SqlCall call) {
+        SqlOperator operator = call.getOperator();
+
+        if (operator != null && "AS".equals(operator.toString())) {
+            List<SqlNode> operands = call.getOperandList();
+            if (!operands.isEmpty() && operands.get(0) instanceof SqlCall) {
+                return ((SqlCall) operands.get(0)).getOperator();
+            }
+        }
+
+        return operator;
     }
 
     public ObjectNode getIOMetadataAsJson() {

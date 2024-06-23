@@ -839,11 +839,15 @@ public class CalciteCompiler implements IWritesLogs {
                         });
                 RelDataType structType = this.typeFactory.createStructType(parameters);
                 SqlDataTypeSpec retType = decl.getReturnType();
-                RelDataType returnType = this.specToRel(retType);
-                Boolean nullableResult = retType.getNullable();
-                if (nullableResult != null)
-                    returnType = this.typeFactory.createTypeWithNullability(returnType,  nullableResult);
-                RexNode bodyExp = this.createFunction(decl);
+                RelDataType returnType = null;
+                if (retType != null) {
+                    returnType = this.specToRel(retType);
+                    Boolean nullableResult = retType.getNullable();
+                    if (nullableResult != null)
+                        returnType = this.typeFactory.createTypeWithNullability(returnType, nullableResult);
+                }
+                RexNode bodyExp = null;
+                if (!decl.getBody().isA(SqlKind.QUERY)) bodyExp = this.createFunction(decl);
                 ExternalFunction function = this.customFunctions.createUDF(
                         CalciteObject.create(node), decl.getName(), structType, returnType, bodyExp);
                 return new CreateFunctionStatement(node, sqlStatement, function);
