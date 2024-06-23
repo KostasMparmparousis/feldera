@@ -54,12 +54,15 @@ pub use spine_fueled::Spine as OldSpine;
 pub mod test;
 
 pub use ord::{
-    FallbackIndexedWSet, FallbackIndexedWSetFactories, FallbackKeyBatch, FallbackKeyBatchFactories,
-    FallbackValBatch, FallbackValBatchFactories, FallbackWSet, FallbackWSetFactories,
-    FileIndexedWSet, FileIndexedWSetFactories, FileKeyBatch, FileKeyBatchFactories, FileValBatch,
-    FileValBatchFactories, FileWSet, FileWSetFactories, OrdIndexedWSet, OrdIndexedWSetFactories,
-    OrdKeyBatch, OrdKeyBatchFactories, OrdValBatch, OrdValBatchFactories, OrdWSet,
-    OrdWSetFactories,
+    FallbackIndexedWSet, FallbackIndexedWSetBuilder, FallbackIndexedWSetFactories,
+    FallbackIndexedWSetMerger, FallbackKeyBatch, FallbackKeyBatchFactories, FallbackValBatch,
+    FallbackValBatchFactories, FallbackWSet, FallbackWSetBuilder, FallbackWSetFactories,
+    FallbackWSetMerger, FileIndexedWSet, FileIndexedWSetFactories, FileKeyBatch,
+    FileKeyBatchFactories, FileValBatch, FileValBatchFactories, FileWSet, FileWSetFactories,
+    OrdIndexedWSet, OrdIndexedWSetBuilder, OrdIndexedWSetFactories, OrdIndexedWSetMerger,
+    OrdKeyBatch, OrdKeyBatchFactories, OrdValBatch, OrdValBatchFactories, OrdWSet, OrdWSetBuilder,
+    OrdWSetFactories, OrdWSetMerger, VecIndexedWSet, VecIndexedWSetFactories, VecKeyBatch,
+    VecKeyBatchFactories, VecValBatch, VecValBatchFactories, VecWSet, VecWSetFactories,
 };
 
 use rkyv::{archived_root, Deserialize, Infallible};
@@ -369,62 +372,6 @@ where
     where
         Self::Time: PartialEq<()>,
         RG: Rng;
-}
-
-pub trait Spillable: BatchReader<Time = ()> {
-    type Spilled: Batch<Key = Self::Key, Val = Self::Val, R = Self::R, Time = ()>
-        + Stored
-        + Sync
-        + Send;
-
-    fn spill(&self, output_factories: &<Self::Spilled as BatchReader>::Factories) -> Self::Spilled {
-        copy_batch(self, &(), output_factories)
-    }
-}
-
-impl<K, V, R> Spillable for OrdIndexedWSet<K, V, R>
-where
-    K: DataTrait + ?Sized,
-    V: DataTrait + ?Sized,
-    R: WeightTrait + ?Sized,
-{
-    type Spilled = FallbackIndexedWSet<K, V, R>;
-}
-
-impl<K, R> Spillable for OrdWSet<K, R>
-where
-    K: DataTrait + ?Sized,
-    R: WeightTrait + ?Sized,
-{
-    type Spilled = FallbackWSet<K, R>;
-}
-
-pub trait Stored: BatchReader<Time = ()> + Send + Sync {
-    type Unspilled: Batch<Key = Self::Key, Val = Self::Val, R = Self::R, Time = ()> + Spillable;
-
-    fn unspill(
-        &self,
-        output_factories: &<Self::Unspilled as BatchReader>::Factories,
-    ) -> Self::Unspilled {
-        copy_batch(self, &(), output_factories)
-    }
-}
-
-impl<K, V, R> Stored for FallbackIndexedWSet<K, V, R>
-where
-    K: DataTrait + ?Sized,
-    V: DataTrait + ?Sized,
-    R: WeightTrait + ?Sized,
-{
-    type Unspilled = OrdIndexedWSet<K, V, R>;
-}
-
-impl<K, R> Stored for FallbackWSet<K, R>
-where
-    K: DataTrait + ?Sized,
-    R: WeightTrait + ?Sized,
-{
-    type Unspilled = OrdWSet<K, R>;
 }
 
 /// A [`BatchReader`] plus features for constructing new batches.
