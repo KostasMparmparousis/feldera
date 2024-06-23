@@ -90,6 +90,13 @@ pub(crate) struct UpdateProgramRequest {
     /// Program configuration.
     #[serde(default)]
     config: Option<ProgramConfig>,
+    /// New SQL code for the program. If absent, existing program code will be
+    /// kept unmodified.
+    rust_code: Option<String>,
+    /// New SQL code for the program. If absent, existing program code will be
+    /// kept unmodified.
+    udf_declaration: Option<String>,
+
 }
 
 /// Response to a program update request.
@@ -112,6 +119,11 @@ pub(crate) struct CreateOrReplaceProgramRequest {
     /// Program configuration.
     #[serde(default)]
     config: ProgramConfig,
+    /// Optional rust code for udf functions.
+    #[schema(example = "pub fn CONTAINS_NUMBER(slice: &[i32], number: i32) { for &item in slice.iter(){if item == number { return true; } } false }")]
+    rust_code: Option<String>,
+    #[schema(example = "CREATE FUNCTION contains_number(str VARCHAR NOT NULL, value INTEGER) RETURNS BOOLEAN NOT NULL;")]
+    udf_declaration: Option<String>,
 }
 
 /// Response to a create or replace program request.
@@ -314,6 +326,8 @@ async fn update_program(
             &body.description,
             &body.code,
             &body.config,
+            &body.rust_code,
+            &body.udf_declaration,
             body.guard,
         )
         .await?;
@@ -351,6 +365,7 @@ async fn create_or_replace_program(
     tenant_id: ReqData<TenantId>,
     request: HttpRequest,
     body: web::Json<CreateOrReplaceProgramRequest>,
+
 ) -> Result<HttpResponse, ManagerError> {
     let program_name = parse_string_param(&request, "program_name")?;
     let (created, program_id, version) = state
@@ -363,6 +378,8 @@ async fn create_or_replace_program(
             &body.description,
             &body.code,
             &body.config,
+            &body.rust_code,
+            &body.udf_declaration,
         )
         .await?;
     if created {

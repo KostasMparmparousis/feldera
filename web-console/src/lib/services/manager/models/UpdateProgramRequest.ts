@@ -24,4 +24,6 @@ export type UpdateProgramRequest = {
    * New program name. If absent, existing name will be kept unmodified.
    */
   name?: string | null
+  rust_code?: string | null
+  udf_declaration?: string | null
 }

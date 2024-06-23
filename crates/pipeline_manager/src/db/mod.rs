@@ -1212,6 +1212,8 @@ impl ProjectDB {
         program_description: &str,
         program_code: &str,
         program_config: &ProgramConfig,
+        program_udf_declaration: &Option<String>,
+        program_rust_code: &Option<String>,
     ) -> Result<(bool, ProgramId, Version), DBError> {
         let mut manager = self.pool.get().await?;
         let txn = manager.transaction().await?;
@@ -1264,6 +1266,8 @@ impl ProjectDB {
         description: &Option<String>,
         program_code: &Option<String>,
         program_config: &Option<ProgramConfig>,
+        program_udf_declaration: &Option<String>,
+        program_rust_code: &Option<String>,
         guard: Option<Version>,
     ) -> Result<Version, DBError> {
         let mut manager = self.pool.get().await?;

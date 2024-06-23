@@ -15,5 +15,7 @@ export type CreateOrReplaceProgramRequest = {
   /**
    * Program description.
    */
-  description: string
+  description: string,
+  rust_code?: string,
+  udf_declaration? : string,
 }
