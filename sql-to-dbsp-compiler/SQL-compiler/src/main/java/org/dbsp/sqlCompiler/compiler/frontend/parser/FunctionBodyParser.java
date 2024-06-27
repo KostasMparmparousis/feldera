@@ -102,11 +102,18 @@ public class FunctionBodyParser extends BaseQueryExtractor {
     protected String buildFromClause(SqlNode fromNode) {
         if (fromNode instanceof SqlJoin) {
             SqlJoin join = (SqlJoin) fromNode;
-            return join.getLeft().toString().replace("`", "") + " " + join.getJoinType().name() + " JOIN " +
-                    join.getRight().toString().replace("`", "") + " ON " + join.getCondition().toString().replace("`", "");
+
+            String leftClause = buildFromClause(join.getLeft()); // Recursively handle left side
+            String rightClause = buildFromClause(join.getRight()); // Recursively handle right side
+
+            if (join.getCondition() != null) {
+                return leftClause + " " + join.getJoinType().name() + " JOIN " +
+                    rightClause + " ON " + join.getCondition().toString().replace("`", "");
+            } else {
+                return leftClause.replace("`", "") + ", " + rightClause.replace("`", "");
+            }
         } else {
             return fromNode.toString().replace("`", "");
-            // return tempTable;
         }
     }
 
